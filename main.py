@@ -8,6 +8,7 @@ AI Renaissance 主入口
 
 import argparse
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 # 添加项目根目录到路径
@@ -16,6 +17,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 from agents.signal import SignalBundle
 from arbitration.engine import ArbitrationEngine
 from loguru import logger
+
+
+DEFAULT_CONFIG = {
+    "confidence_threshold": 0.6,
+    "bullish_weight": 1.0,
+    "bearish_weight": 1.0,
+    "agents": {
+        "cash_flow": {
+            "enabled": True,
+            "confidence_threshold": 0.6,
+            "periods": 4,
+        }
+    },
+}
 
 # 配置日志
 logger.add("logs/arbitration.log", rotation="10 MB", retention="7 days")
@@ -62,47 +77,73 @@ def main():
 def load_config(config_path: str) -> dict:
     """加载配置文件"""
     import yaml
+
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+            loaded = yaml.safe_load(f) or {}
     except FileNotFoundError:
         logger.warning(f"配置文件 {config_path} 不存在，使用默认配置")
-        return {
-            "confidence_threshold": 0.6,
-            "bullish_weight": 1.0,
-            "bearish_weight": 1.0,
-            "agents": [],  # 要启用的Agent列表
-        }
+        loaded = {}
+
+    if not isinstance(loaded, dict):
+        raise ValueError("配置文件顶层必须是字典")
+
+    config = deepcopy(DEFAULT_CONFIG)
+    config.update({k: v for k, v in loaded.items() if k != "agents"})
+
+    loaded_agents = loaded.get("agents") or {}
+    agents_config = config["agents"]
+
+    if isinstance(loaded_agents, list):
+        enabled_agents = set()
+        for agent_name in loaded_agents:
+            if not isinstance(agent_name, str):
+                raise ValueError("agents 列表中的条目必须是字符串")
+            enabled_agents.add(agent_name)
+
+        for agent_name in list(agents_config.keys()):
+            agents_config[agent_name]["enabled"] = agent_name in enabled_agents
+        for agent_name in enabled_agents:
+            agents_config.setdefault(agent_name, {"enabled": True})
+    elif isinstance(loaded_agents, dict):
+        for agent_name, agent_config in loaded_agents.items():
+            if isinstance(agent_config, bool):
+                agent_config = {"enabled": agent_config}
+            elif not isinstance(agent_config, dict):
+                raise ValueError(f"Agent {agent_name} 的配置必须是字典或布尔值")
+
+            merged_agent_config = agents_config.get(agent_name, {}).copy()
+            merged_agent_config.update(agent_config)
+            agents_config[agent_name] = merged_agent_config
+    else:
+        raise ValueError("agents 配置必须是字典或字符串列表")
+
+    return config
 
 
 def collect_signals(stock_code: str, config: dict) -> SignalBundle:
-    """
-    收集所有Agent的信号
-
-    TODO: 动态加载agents/目录下所有Agent
-    目前是示例，手动添加
-    """
+    """收集所有Agent的信号"""
     from agents.signal import SignalBundle
 
     bundle = SignalBundle(stock_code=stock_code)
+    agents_config = config.get("agents", {})
+    cash_flow_config = agents_config.get("cash_flow", {})
 
-    # ===== 示例：加载现金流Agent =====
-    # TODO: 实际应该从配置文件动态加载
-    try:
-        from agents.research.financial.cash_flow.agent import CashFlowAgent
+    if isinstance(cash_flow_config, bool):
+        cash_flow_config = {"enabled": cash_flow_config}
+    elif not isinstance(cash_flow_config, dict):
+        raise ValueError("cash_flow Agent 配置必须是字典或布尔值")
 
-        agent = CashFlowAgent(config={})
-        signal = agent.analyze(stock_code)
-        bundle.add(signal)
-        logger.info(f"[{signal.source}] 信号已收集：{signal.direction} ({signal.confidence:.1%})")
-    except Exception as e:
-        logger.error(f"加载现金流Agent失败：{e}")
+    if cash_flow_config.get("enabled", True):
+        try:
+            from agents.research.financial.cash_flow.agent import CashFlowAgent
 
-    # ===== 在这里添加更多Agent =====
-    # from agents.research.trend.ma_trend.agent import MATrendAgent
-    # agent = MATrendAgent(config={})
-    # signal = agent.analyze(stock_code)
-    # bundle.add(signal)
+            agent = CashFlowAgent(config=cash_flow_config)
+            signal = agent.analyze(stock_code)
+            bundle.add(signal)
+            logger.info(f"[{signal.source}] 信号已收集：{signal.direction} ({signal.confidence:.1%})")
+        except Exception as e:
+            logger.error(f"加载现金流Agent失败：{e}")
 
     return bundle
 

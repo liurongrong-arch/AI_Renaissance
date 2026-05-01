@@ -1,0 +1,9 @@
+confidence_threshold: 0.6
+bullish_weight: 1.0
+bearish_weight: 1.0
+
+agents:
+  cash_flow:
+    enabled: true
+    confidence_threshold: 0.6
+    periods: 4
