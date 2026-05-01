@@ -36,7 +36,7 @@ class FinancialReportAgent(BaseAgent):
     def __init__(self, config: Optional[dict] = None):
         super().__init__(name="财务专家Agent", config=config or {})
         self.skill_path = (
-            Path(__file__).resolve().parent.parent.parent
+            Path(__file__).resolve().parent.parent.parent.parent
             / "skills" / "financial_report_analysis" / "SKILL.md"
         )
         self.skill_content = ""
@@ -129,18 +129,42 @@ class FinancialReportAgent(BaseAgent):
             return {}
 
         base_url = "https://emweb.eastmoney.com/NewFinanceAnalysis"
-        report_date = "2026-03-31"  # 最新披露期，后续应改为动态获取
+        # 动态获取最新报告期（季报披露截止日后，才能拿到该季报数据）
+        # 报告期 vs 披露截止日：Q1(03-31)→4/30  Q2(06-30)→8/31  Q3(09-30)→10/31  Q4(12-31)→次年4/30
+        from datetime import datetime
+        today = datetime.now()
+        report_date = None
+        if today >= datetime(today.year + 1, 4, 30):
+            # 次年4月30日之后 → 可拿今年Q4数据（12-31）
+            report_date = f"{today.year}-12-31"
+        elif today >= datetime(today.year, 10, 31):
+            # 10月31日之后 → 可拿Q3数据（09-30）
+            report_date = f"{today.year}-09-30"
+        elif today >= datetime(today.year, 8, 31):
+            # 8月31日之后 → 可拿Q2数据（06-30）
+            report_date = f"{today.year}-06-30"
+        elif today >= datetime(today.year, 4, 30):
+            # 4月30日之后 → 可拿Q1数据（03-31）
+            report_date = f"{today.year}-03-31"
+        else:
+            # 4月30日之前 → 只能拿去年Q4数据（去年12-31）
+            report_date = f"{today.year - 1}-12-31"
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "Referer": "https://emweb.eastmoney.com/",
+        }
 
         urls = {
             "balance":   f"{base_url}/zcfzbAjaxNew?companyType=4&reportDateType=0&reportType=1&dates={report_date}&code={eastmoney_code}",
-            "income":     f"{base_url}/lbAjaxNew?companyType=4&reportDateType=0&reportType=1&dates={report_date}&code={eastmoney_code}",
-            "cashflow":   f"{base_url}/xjlIbAjaxNew?companyType=4&reportDateType=0&reportType=1&dates={report_date}&code={eastmoney_code}",
+            "income":     f"{base_url}/lrbAjaxNew?companyType=4&reportDateType=0&reportType=1&dates={report_date}&code={eastmoney_code}",
+            "cashflow":   f"{base_url}/xjllbAjaxNew?companyType=4&reportDateType=0&reportType=1&dates={report_date}&code={eastmoney_code}",
         }
 
         results = {}
         for sheet_name, url in urls.items():
             try:
-                resp = requests.get(url, timeout=10)
+                resp = requests.get(url, headers=headers, timeout=10)
                 resp.raise_for_status()
                 results[sheet_name] = resp.json()
                 self.log(f"获取{sheet_name}数据成功：{eastmoney_code}")
@@ -215,10 +239,11 @@ class FinancialReportAgent(BaseAgent):
             income_data  = financial_data.get("income",  {}).get("data", [{}])[0]
             cashflow_data = financial_data.get("cashflow", {}).get("data", [{}])[0]
 
-            # 提取核心数值（字段名以东方财富 API 实际返回为准，这里用常见字段）
-            # 不同股票的字段名可能不同，做好容错
-            net_profit = self._safe_float(income_data.get("PARENTPROFIT", 0))
-            cash_flow  = self._safe_float(cashflow_data.get("OPERATENETCASHFLOW", 0))
+            # 提取核心数值（字段名以东方财富 API 实际返回为准）
+            # PARENT_NETPROFIT  = 归属于上市公司股东的净利润
+            # NETCASH_OPERATE    = 经营活动产生的现金流量净额
+            net_profit = self._safe_float(income_data.get("PARENT_NETPROFIT", 0))
+            cash_flow  = self._safe_float(cashflow_data.get("NETCASH_OPERATE", 0))
 
             if net_profit == 0:
                 return {
