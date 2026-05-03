@@ -31,6 +31,12 @@ AVAILABLE_AGENTS = {
         "owner": "duolong",
         "description": "调用七步验证链（Skills），深度财报质量分析",
     },
+    "舆情监控Agent": {
+        "module": "agents.perception.sentiment.agent",
+        "class": "SentimentAgent",
+        "owner": "jerryyu",
+        "description": "抓取东方财富股吧帖子，通过关键词分析市场情绪",
+    },
     # ↓ 小白在这里添加你自己的 Agent ↓
     # "你的Agent名": {
     #     "module": "agents.research.你的路径.agent",
@@ -136,6 +142,9 @@ def reload_agents():
 
 
 if __name__ == "__main__":
+    import sys
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     print("\n" + "=" * 60)
     print("  AI Renaissance - Agent 本地调试工具")
     print("  麦肯锡风格 · 简洁 · 高效")

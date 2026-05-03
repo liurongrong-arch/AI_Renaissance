@@ -589,12 +589,27 @@ function renderSignal(sig, agentName, stockCode) {
   let metaHtml = "";
   if (sig.meta && Object.keys(sig.meta).length) {
     metaHtml = '<div class="signal-detail-grid">' +
-      Object.entries(sig.meta).map(([k,v]) =>
-        `<div class="detail-item">
+      Object.entries(sig.meta).map(([k,v]) => {
+        let display = v;
+        if (Array.isArray(v)) {
+          if (v.length > 0 && typeof v[0] === "object") {
+            display = v.map(item => {
+              if (typeof item === "object" && item !== null) {
+                return Object.entries(item).map(([ik,iv]) => `${ik}: ${iv}`).join(" | ");
+              }
+              return String(item);
+            }).join("\n");
+          } else {
+            display = v.join(", ");
+          }
+        } else if (typeof v === "object" && v !== null) {
+          display = JSON.stringify(v, null, 2);
+        }
+        return `<div class="detail-item">
            <div class="detail-label">${k}</div>
-           <div class="detail-value">${v}</div>
-         </div>`
-      ).join("") +
+           <div class="detail-value" style="white-space:pre-wrap;">${display}</div>
+         </div>`;
+      }).join("") +
       "</div>";
   }
 
