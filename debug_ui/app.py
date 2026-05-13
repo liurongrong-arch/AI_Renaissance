@@ -209,6 +209,7 @@ def orchestrate():
                 "signals_summary": result.signals_summary,
                 "risks": result.risks,
                 "reasoning_chain": result.reasoning_chain,
+                "scope_trace": result.scope_trace,
             }
         })
     except Exception as e:
