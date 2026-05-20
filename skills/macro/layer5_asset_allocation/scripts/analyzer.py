@@ -17,6 +17,22 @@ from utils.signal_utils import (
     build_macro_signal,
 )
 
+# Layer 4 信号中 related_assets 使用中文名，final_weights 键为英文
+# 此映射保证跨层解析一致性
+ASSET_NAME_MAPPING: Dict[str, str] = {
+    "A股": "csi300_500",
+    "美股": "us_assets",
+    "商品": "nh_industrial",
+    "黄金": "gold",
+    "债券": "cn_gov_bond",
+    "中国国债": "cn_gov_bond",
+}
+
+
+def _normalize_asset_name(name: str) -> str:
+    """将中文资产名映射为英文标准键，无匹配时返回原名（用于无法映射的资产）。"""
+    return ASSET_NAME_MAPPING.get(name, name)
+
 
 def analyze_asset_allocation(
     layer2_output: Dict[str, Any],
@@ -36,8 +52,17 @@ def analyze_asset_allocation(
     Returns:
         资产配置分析结果
     """
-    # Step 1: 计算Beta基准权重
-    beta_weights = calculate_beta_weights(volatility_data)
+    # Step 1: 计算Beta基准权重（含周期象限和债务周期调整）
+    # 从Layer 2输出提取象限和债务周期
+    cycle_output = layer2_output.get("layer_output", {}).get("analysis_result", {})
+    cycle_position = cycle_output.get("china_quadrant_adjusted", {})
+    debt_cycle = cycle_output.get("debt_cycle")
+    
+    beta_weights = calculate_beta_weights(
+        volatility_data,
+        cycle_position=cycle_position,
+        debt_cycle=debt_cycle,
+    )
     
     # Step 2: 计算Alpha偏离
     alpha_deviation = calculate_alpha_deviation(
@@ -93,41 +118,109 @@ def analyze_asset_allocation(
 
 
 def calculate_beta_weights(
-    volatility_data: Optional[Dict[str, float]]
+    volatility_data: Optional[Dict[str, float]],
+    cycle_position: Optional[Dict[str, Any]] = None,
+    debt_cycle: Optional[Dict[str, str]] = None,
 ) -> Dict[str, float]:
     """
     计算Beta基准权重（中国版All Weather）。
     
     方法：
-    1. 计算各资产3年滚动年化波动率
-    2. 基础权重 = (1/σ) / Σ(1/σ)
-    3. 校验组合年化波动率≤8%
+    1. 计算各资产3年滚动年化波动率（风险平价基础）
+    2. 根据周期象限做方向性微调（框架第603行表7.3）
+    3. 根据长期债务周期做战略调节（框架第622-623行）
+    
+    Args:
+        volatility_data: 各资产年化波动率（用于风险平价）
+        cycle_position: 周期象限定位，格式 {"quadrant": "recession"/"recovery"/...}
+        debt_cycle: 长期债务周期，格式 {"us": "late"/"early"/"middle", "cn": "downward"/"upward"/"stable"}
     """
     if not volatility_data:
         # 无波动率数据，返回默认权重
-        return BETA_BENCHMARK_WEIGHTS.copy()
+        beta = BETA_BENCHMARK_WEIGHTS.copy()
+    else:
+        # 计算风险平价权重
+        weights = {}
+        total_inv_vol = 0
+        
+        for asset, vol in volatility_data.items():
+            if vol > 0:
+                inv_vol = 1 / vol
+                total_inv_vol += inv_vol
+        
+        for asset, vol in volatility_data.items():
+            if vol > 0:
+                weights[asset] = (1 / vol) / total_inv_vol
+            else:
+                weights[asset] = 0
+        
+        # 归一化
+        total = sum(weights.values())
+        if total > 0:
+            weights = {k: v / total for k, v in weights.items()}
+        beta = weights
     
-    # 计算风险平价权重
-    weights = {}
-    total_inv_vol = 0
+    # 框架第603行表7.3：周期象限→受益/受损资产→方向性权重调整
+    if cycle_position:
+        quadrant = cycle_position.get("quadrant", "")
+        
+        # 框架第598-603行表7.3：象限→受益/受损资产→权重调整
+        # recovery=复苏, overheating=过热, stagflation=滞胀, recession=衰退
+        quadrant_adjustments: Dict[str, Dict[str, float]] = {
+            # 象限I复苏：权益↑ 国债↓ 黄金↓
+            "recovery": {
+                "csi300_500": +0.05, "us_assets": +0.03,
+                "cn_gov_bond": -0.05, "gold": -0.03,
+            },
+            # 象限II过热：大宗商品↑ 国债↓ 成长股↓
+            "overheating": {
+                "nh_industrial": +0.05,
+                "csi300_500": +0.03, "us_assets": +0.02,
+                "cn_gov_bond": -0.05, "gold": -0.05,
+            },
+            # 象限III滞胀：黄金↑ 债券↓ 权益↓
+            "stagflation": {
+                "gold": +0.05, "cn_gov_bond": +0.03,
+                "csi300_500": -0.05, "us_assets": -0.03,
+            },
+            # 象限IV衰退：国债↑ 黄金↑ 权益↓ 大宗↓
+            "recession": {
+                "cn_gov_bond": +0.05, "gold": +0.03,
+                "csi300_500": -0.05, "nh_industrial": -0.03,
+            },
+        }
+        
+        adj = quadrant_adjustments.get(quadrant, {})
+        for asset, delta in adj.items():
+            if asset in beta:
+                beta[asset] += delta
     
-    for asset, vol in volatility_data.items():
-        if vol > 0:
-            inv_vol = 1 / vol
-            total_inv_vol += inv_vol
+    # 框架第622-623行：长期债务周期战略调节
+    if debt_cycle:
+        # 美国长期债务周期末端：提高黄金/商品权重+10-20%，降低债券-10%
+        us_status = debt_cycle.get("us", "")
+        if us_status == "late":
+            beta["gold"] = beta.get("gold", 0) + 0.10
+            beta["nh_industrial"] = beta.get("nh_industrial", 0) + 0.05
+            beta["cn_gov_bond"] = beta.get("cn_gov_bond", 0) - 0.15
+        
+        # 中国长期债务周期下行：降低债券+10%，提高高股息（简化：用黄金替代）
+        cn_status = debt_cycle.get("cn", "")
+        if cn_status == "downward":
+            beta["cn_gov_bond"] = beta.get("cn_gov_bond", 0) - 0.10
+            beta["gold"] = beta.get("gold", 0) + 0.10
     
-    for asset, vol in volatility_data.items():
-        if vol > 0:
-            weights[asset] = (1 / vol) / total_inv_vol
-        else:
-            weights[asset] = 0
+    # 确保权重非负
+    for asset in beta:
+        if beta[asset] < 0:
+            beta[asset] = 0
     
-    # 归一化
-    total = sum(weights.values())
+    # 归一化到100%
+    total = sum(beta.values())
     if total > 0:
-        weights = {k: v / total for k, v in weights.items()}
+        beta = {k: v / total for k, v in beta.items()}
     
-    return weights
+    return beta
 
 
 def calculate_alpha_deviation(
@@ -148,12 +241,17 @@ def calculate_alpha_deviation(
     deviations = {}
     
     for signal in signals:
-        if signal.get("final_intensity", signal.get("intensity", 0)) < 50:
-            continue  # 强度不足，不产生偏离
+        # 断点②修复：阈值从50降至35
+        # Layer 4.5 三重修正（压力×生命周期×范式）会将信号强度衰减约35%
+        # 修正后强度56.5 → 约38，仍应纳入Alpha计算
+        intensity = signal.get("final_intensity", signal.get("intensity", 0))
+        if intensity < 35:
+            continue
         
-        intensity = signal.get("final_intensity", signal.get("intensity", 50))
         direction = signal.get("direction")
-        assets = signal.get("related_assets", [])
+        # 断点①修复：将中文资产名映射为英文标准键
+        raw_assets = signal.get("related_assets", [])
+        assets = [_normalize_asset_name(a) for a in raw_assets]
         
         # 计算偏离系数
         if intensity >= 80:
@@ -293,14 +391,41 @@ def _determine_confidence(
     weights: Dict[str, float],
     alpha_deviation: Dict[str, Any]
 ) -> float:
-    """确定置信度。"""
-    deviation_count = len(alpha_deviation)
-    if deviation_count >= 3:
-        return 0.8
-    elif deviation_count >= 1:
-        return 0.7
-    else:
+    """
+    确定置信度。
+    
+    基于 alpha_deviation 的实际偏离总量，而非资产数量。
+    框架设计：偏离总量越大 → 信号越强 → 置信度越高。
+    """
+    if not alpha_deviation:
         return 0.5
+    
+    # 实际偏离总量（净值偏离绝对值之和）
+    total_dev = sum(abs(d["net_deviation"]) for d in alpha_deviation.values())
+    
+    # 偏离总量 > 20%：3个以上有效信号叠加
+    if total_dev > 0.20:
+        return 0.85
+    # 偏离总量 > 10%：有意义的信号叠加
+    elif total_dev > 0.10:
+        return 0.80
+    # 偏离总量 > 5%：单个强信号
+    elif total_dev > 0.05:
+        return 0.75
+    else:
+        return 0.65
+
+
+# 资产名称映射（中英文对照）
+ASSET_NAME_MAP: Dict[str, str] = {
+    "csi300_500": "A股",
+    "cn_gov_bond": "中债",
+    "nh_industrial": "南华工业品",
+    "gold": "黄金",
+    "us_assets": "美股",
+    "emerging_market": "新兴市场",
+    "global_capital_flow": "全球资本流向",
+}
 
 
 def _generate_reasoning(
@@ -308,34 +433,49 @@ def _generate_reasoning(
     alpha_deviation: Dict[str, Any]
 ) -> str:
     """生成推理摘要。"""
-    lines = []
+    # 计算整体方向
+    equity_weight = weights.get("csi300_500", 0) + weights.get("us_assets", 0) * 0.5
+    bond_weight = weights.get("cn_gov_bond", 0)
     
-    # Beta配置
+    if equity_weight > bond_weight:
+        direction_str = "整体方向: 看多权益"
+    elif bond_weight > equity_weight * 1.2:
+        direction_str = "偏重债券防御"
+    else:
+        direction_str = "整体方向: 中性配置"
+    
+    lines = [direction_str]
+    
+    # Beta配置 - 使用中文资产名
+    allocation_items = []
     for asset, weight in weights.items():
         if weight > 0.1:
-            lines.append(f"{asset}: {weight:.0%}")
+            cn_name = ASSET_NAME_MAP.get(asset, asset)
+            allocation_items.append(f"{cn_name} {weight:.0%}")
+    if allocation_items:
+        lines.append(" | ".join(allocation_items))
     
-    # Alpha偏离
+    # Alpha偏离 - 使用中文资产名
     if alpha_deviation:
-        bullish = [a for a, d in alpha_deviation.items() if d["bullish"] > 0]
-        bearish = [a for a, d in alpha_deviation.items() if d["bearish"] > 0]
+        bullish = [ASSET_NAME_MAP.get(a, a) for a, d in alpha_deviation.items() if d["bullish"] > 0]
+        bearish = [ASSET_NAME_MAP.get(a, a) for a, d in alpha_deviation.items() if d["bearish"] > 0]
         
         if bullish:
             lines.append(f"超配: {', '.join(bullish)}")
         if bearish:
             lines.append(f"低配: {', '.join(bearish)}")
     
-    return "; ".join(lines)
+    return " | ".join(lines)
 
 
 def _generate_signals(weights: Dict[str, float]) -> List[str]:
-    """生成信号列表。"""
+    """生成信号列表——固定输出每种资产，不做阈值筛选。"""
     signals = []
     
     for asset, weight in weights.items():
-        if weight > 0.15:
+        if weight >= 0.05:
             signals.append(f"{asset} 配置{weight:.0%}")
-        elif weight < 0.05:
+        else:
             signals.append(f"{asset} 低配{weight:.0%}")
     
     return signals

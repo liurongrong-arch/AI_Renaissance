@@ -21,6 +21,7 @@ from utils.signal_utils import (
 def analyze_expected_diff(
     layer1_output: Dict[str, Any],
     layer3_output: Dict[str, Any],
+    layer25_output: Optional[Dict[str, Any]] = None,
     cesi_data: Optional[Dict[str, float]] = None,
     historical_signals: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
@@ -30,9 +31,8 @@ def analyze_expected_diff(
     Args:
         layer1_output: Layer 1 输出（实际基本面状态）
         layer3_output: Layer 3 输出（市场定价）
+        layer25_output: Layer 2.5 输出（枢纽变量：全球三角、USD/CNH方向、铜金比）
         cesi_data: 花旗经济意外指数数据（可选）
-            - china_cesi: 中国CESI
-            - us_cesi: 美国CESI
         historical_signals: 历史信号列表（用于衰减和复核检查）
     
     Returns:
@@ -44,8 +44,8 @@ def analyze_expected_diff(
     # Step 2: 计算类型B信号（基本面vs市场定价）
     type_b_signals = calculate_type_b_signals(layer1_output, layer3_output)
     
-    # Step 3: 计算类型C信号（跨国预期差）
-    type_c_signals = calculate_type_c_signals(layer1_output, layer3_output)
+    # Step 3: 计算类型C信号（跨国预期差，含Layer 2.5枢纽变量信号）
+    type_c_signals = calculate_type_c_signals(layer1_output, layer3_output, layer25_output)
     
     # Step 4: 应用信号衰减
     all_signals = apply_signal_decay(
@@ -204,10 +204,142 @@ def calculate_type_b_signals(
 
 def calculate_type_c_signals(
     layer1: Dict[str, Any],
-    layer3: Dict[str, Any]
+    layer3: Dict[str, Any],
+    layer25_output: Optional[Dict[str, Any]] = None,
 ) -> List[Dict]:
-    """计算类型C信号：跨国预期差。"""
+    """
+    计算类型C信号：跨国预期差。
+    
+    框架设计（requirement.md 第773-781行）：
+    - 跨国预期差（中美增长/流动性等）
+    - 美元-大宗联动信号（Layer 2.5全球宏观三角状态切换）
+    - USD/CNH贬值压力信号
+    """
     signals = []
+    
+    # Layer 2.5 枢纽变量输出（框架第982-984行列出的三条直接信号）
+    if layer25_output:
+        macro_triangle = layer25_output.get("macro_triangle", {})
+        cnh_direction = layer25_output.get("cnh_direction", {})
+        commodity_signals = layer25_output.get("commodity_signals", [])
+        
+        # 信号1：全球宏观三角（框架第982行）
+        triangle = macro_triangle.get("triangle")
+        if triangle in ("global_tightening", "global_easing", "stagflation", "deflation"):
+            # 全球紧缩三角：整体降低风险资产、增加黄金
+            if triangle == "global_tightening":
+                direction = "bearish"
+                triangle_signal = "全球紧缩三角：外资流出、新兴市场承压"
+                related_assets = ["csi300_500", "us_assets"]
+                related_assets_zh = ["A股", "美股"]
+            elif triangle == "global_easing":
+                direction = "bullish"
+                triangle_signal = "全球宽松三角：外资流入、风险资产受益"
+                related_assets = ["csi300_500", "nh_industrial"]
+                related_assets_zh = ["A股", "商品"]
+            elif triangle == "stagflation":
+                direction = "neutral"
+                triangle_signal = "滞胀三角：黄金最优、风险资产承压"
+                related_assets = ["gold"]
+                related_assets_zh = ["黄金"]
+            else:  # deflation
+                direction = "neutral"
+                triangle_signal = "通缩三角：债券和高股息最优"
+                related_assets = ["cn_gov_bond"]
+                related_assets_zh = ["债券"]
+            
+            # 铜金比z-score作为强度代理（框架第668行：|z|>1.5强信号）
+            copper_gold_signal = next(
+                (s for s in commodity_signals if s.get("name") == "铜金比"), {}
+            )
+            copper_gold_z = abs(copper_gold_signal.get("z_score", 0))
+            # z>2.0→极强信号强度100, z>1.5→强信号强度80
+            if copper_gold_z > 2.0:
+                intensity = 100.0
+            elif copper_gold_z > 1.5:
+                intensity = 80.0
+            else:
+                intensity = 50.0
+            
+            signals.append({
+                "type": "C",
+                "name": "美元-大宗联动信号",
+                "source": "Layer 2.5 全球宏观三角",
+                "direction": direction,
+                "triangle": triangle,
+                "macro_meaning": triangle_signal,
+                "intensity": intensity,
+                "percentile": intensity,
+                "validity_months": SIGNAL_DECAY_PARAMS["type_c"]["initial_validity_months"],
+                "decay_type": "exponential",
+                "decay_rate": SIGNAL_DECAY_PARAMS["type_c"]["monthly_decay_rate"],
+                "related_assets": related_assets_zh,
+            })
+        
+        # 信号2：USD/CNH贬值压力（框架第984行）
+        cnh_score = cnh_direction.get("score", 0)
+        if abs(cnh_score) > 0.5:
+            # score<0 → 贬值压力 → bearish for A股/港股, bullish for gold
+            if cnh_score < -0.5:
+                direction = "bearish"
+                cnh_signal = "人民币贬值压力：港股和外资重仓股承压、出口股和黄金受益"
+                related_assets = ["港股", "外资重仓股", "黄金", "出口股"]
+            else:
+                direction = "bullish"
+                cnh_signal = "人民币升值压力：外资重仓股受益、黄金承压"
+                related_assets = ["外资重仓股", "黄金"]
+            
+            intensity = min(100, abs(cnh_score) / 1.0 * 60 + 40)
+            signals.append({
+                "type": "C",
+                "name": "USD/CNH汇率信号",
+                "source": "Layer 2.5 汇率分析",
+                "direction": direction,
+                "cnh_score": cnh_score,
+                "macro_meaning": cnh_signal,
+                "intensity": intensity,
+                "percentile": intensity,
+                "validity_months": SIGNAL_DECAY_PARAMS["type_c"]["initial_validity_months"],
+                "decay_type": "exponential",
+                "decay_rate": SIGNAL_DECAY_PARAMS["type_c"]["monthly_decay_rate"],
+                "related_assets": related_assets,
+            })
+        
+        # 信号3：铜金比极端低位+增长信号（框架第983行）
+        copper_gold_signal = next(
+            (s for s in commodity_signals if s.get("name") == "铜金比"), {}
+        )
+        copper_gold_z = copper_gold_signal.get("z_score", 0)
+        if copper_gold_z < -1.5:
+            # 铜金比极端低位 → 周期股相对防御股被低估
+            # 需要叠加增长信号（Layer 1 CAI > 0）才有效
+            china_cai = layer1.get("china_cai", {}).get("z_score", 0)
+            if china_cai > 0:
+                direction = "bullish"
+                signal_text = f"铜金比极端低估(z={copper_gold_z:.2f})，叠加中国CAI确认增长，周期股超配"
+                related_assets = ["周期股", "防御股"]
+            else:
+                direction = "neutral"
+                signal_text = f"铜金比极端低估(z={copper_gold_z:.2f})，但增长信号不足，不构成周期股信号"
+                related_assets = []
+            
+            intensity = min(100, abs(copper_gold_z) * 30)
+            if related_assets:
+                signals.append({
+                    "type": "C",
+                    "name": "铜金比极端低估信号",
+                    "source": "Layer 2.5 大宗商品信号",
+                    "direction": direction,
+                    "copper_gold_z": copper_gold_z,
+                    "china_cai": china_cai,
+                    "macro_meaning": signal_text,
+                    "intensity": intensity,
+                    "percentile": intensity,
+                    "validity_months": SIGNAL_DECAY_PARAMS["type_c"]["initial_validity_months"],
+                    "decay_type": "exponential",
+                    "decay_rate": SIGNAL_DECAY_PARAMS["type_c"]["monthly_decay_rate"],
+                    "related_assets": related_assets,
+                })
     
     # 中美增长预期差
     china_cai = layer1.get("china_cai", {}).get("z_score", 0)

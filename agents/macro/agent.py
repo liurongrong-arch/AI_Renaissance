@@ -17,6 +17,15 @@ Skill 域: skills/macro/
 
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+import re
+import sys
+from pathlib import Path
+
+# 确保 skills/macro 在 sys.path 中，使各层 analyzer 中的 "from utils.xxx import ..." 可被解析
+_MACRO_SKILLS_ROOT = Path(__file__).resolve().parents[2] / "skills" / "macro"
+if str(_MACRO_SKILLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MACRO_SKILLS_ROOT))
+
 from loguru import logger
 
 from agents.base import BaseAgent
@@ -254,8 +263,8 @@ class MacroAgent(BaseAgent):
             # Step 6: Layer 3 - 市场定价提取
             layer3_result = self._run_layer3(layer1_result, data)
             
-            # Step 7: Layer 4 - 预期差信号引擎
-            layer4_result = self._run_layer4(layer1_result, layer3_result)
+            # Step 7: Layer 4 - 预期差信号引擎（需Layer 2.5枢纽变量结果）
+            layer4_result = self._run_layer4(layer1_result, layer3_result, layer25_result)
             
             # Step 8: Layer 4.5 - 反身性与元认知
             layer45_result = self._run_layer45(data, layer4_result)
@@ -298,15 +307,11 @@ class MacroAgent(BaseAgent):
                 "layer5": layer5_result.get("layer_output", {}),
             }
             
-            # 添加推理链到 meta
-            final_signal.meta["reasoning_chain"] = reasoning_chain.to_dict()
-            
-            # 添加推理链摘要到 meta（便于快速访问）
-            final_signal.meta["reasoning_chain_summary"] = {
-                "step_count": len(reasoning_chain.steps),
-                "chain_confidence": reasoning_chain.chain_confidence,
-                "final_conclusion": reasoning_chain.final_conclusion,
-            }
+            # 基于全局推理链生成推理摘要（覆盖 layer5 阶段的局部摘要）
+            final_signal.reasoning = self._summarize_reasoning_chain(reasoning_chain, final_signal)
+
+            # 添加推理链到 meta（存储完整 markdown 格式）
+            final_signal.meta["reasoning_chain"] = reasoning_chain.to_markdown()
             
             self.log(f"宏观分析完成，耗时{(datetime.now() - start_time).total_seconds():.2f}秒")
             return final_signal
@@ -558,14 +563,23 @@ class MacroAgent(BaseAgent):
         
         return result
 
-    def _run_layer4(self, layer1_result: Dict[str, Any], layer3_result: Dict[str, Any]) -> Dict[str, Any]:
+    def _run_layer4(
+        self,
+        layer1_result: Dict[str, Any],
+        layer3_result: Dict[str, Any],
+        layer25_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Layer 4: 预期差信号引擎"""
         self.log("执行 Layer 4: 预期差信号引擎")
+        
+        # 从Layer 2.5提取枢纽变量分析结果（框架第781行：美元-大宗联动信号）
+        layer25_output = layer25_result.get("layer_output", {})
         
         # 执行分析
         result = analyze_expected_diff(
             layer1_output=layer1_result,
             layer3_output=layer3_result,
+            layer25_output=layer25_output,
         )
         
         return result
@@ -603,11 +617,23 @@ class MacroAgent(BaseAgent):
         """Layer 5: 资产配置"""
         self.log("执行 Layer 5: 资产配置")
         
+        # 断点③修复：生成波动率数据 fallback
+        # 框架要求使用3年滚动年化波动率；数据源未接入时使用合理默认值
+        # 各资产年化波动率参考：A股~22%, 国债~4%, 南华工业品~18%, 黄金~14%, 美股~17%
+        volatility_data = {
+            "csi300_500": 0.22,
+            "cn_gov_bond": 0.04,
+            "nh_industrial": 0.18,
+            "gold": 0.14,
+            "us_assets": 0.17,
+        }
+        
         # 执行分析
         result = analyze_asset_allocation(
             layer2_output=layer2_result,
             layer4_output=layer4_result,
             layer45_output=layer45_result,
+            volatility_data=volatility_data,
         )
         
         return result
@@ -663,6 +689,113 @@ class MacroAgent(BaseAgent):
     # =============================================================================
     # 推理链构建
     # =============================================================================
+
+    def _summarize_reasoning_chain(
+        self,
+        chain: ReasoningChain,
+        final_signal: Signal,
+    ) -> str:
+        """
+        基于全局推理链生成推理摘要。
+
+        策略：优先使用 final_signal 的语义字段（signals 配置列表）；
+        fallback 到中间层有实质内容的结论。
+        摘要格式：方向 置信度 | 核心发现1 | 核心发现2 | ...
+        """
+        # ---------- 方向 ----------
+        direction_map = {
+            "bullish": "看多",
+            "bearish": "看空",
+            "neutral": "中性",
+        }
+        direction_str = direction_map.get(
+            final_signal.direction, final_signal.direction or "中性"
+        )
+        confidence_str = f"{int(final_signal.confidence * 100)}%"
+
+        # ---------- 策略一：从 final_signal.signals 构建 ----------
+        # signals 格式如: ["csi300_500 配置15%", "cn_gov_bond 配置35%"]
+        signals = final_signal.signals or []
+        if signals:
+            # 翻译资产英文名 → 中文
+            asset_name_map: Dict[str, str] = {
+                "csi300_500": "A股",
+                "us_assets": "美股",
+                "cn_gov_bond": "中债",
+                "nh_industrial": "南华工业",
+                "gold": "黄金",
+                "新兴市场": "新兴市场",
+                "全球资本流向": "全球资本",
+            }
+            signal_parts: List[str] = []
+            for s in signals:
+                # 替换资产名
+                readable = s
+                for en, zh in asset_name_map.items():
+                    readable = readable.replace(en, zh)
+                signal_parts.append(readable)
+
+            summary_parts = signal_parts[:8]  # 最多8个配置信号
+            result = " | ".join(summary_parts)
+            if len(result) > 200:
+                result = result[:197] + "…"
+            return result
+
+        # ---------- 策略二：从推理链提取有效结论 ----------
+        if not chain.steps:
+            return "无推理链数据"
+
+        # 内部枚举翻译
+        enum_translations: Dict[str, str] = {
+            "InteractionLevel.FEEDBACK_LOOP": "中美反馈循环",
+            "InteractionLevel.SYNCHRONIZATION": "中美周期同步",
+            "InteractionLevel.DIVERGENCE": "中美周期分化",
+        }
+        NA_WHOLE = re.compile(r"^(?:N/A|n/a|NA|null|无|暂无)\s*$", re.IGNORECASE)
+        SKIP_STEP_NAMES: set[str] = {
+            "中国增长维度分析", "美国增长维度分析", "中美交互层次判定",
+        }
+
+        parts: List[str] = []
+        seen_layer: set[str] = set()
+
+        for step in chain.steps:
+            conclusion = step.intermediate_conclusion
+            if not conclusion:
+                continue
+            if step.step_name in SKIP_STEP_NAMES:
+                continue
+
+            # 翻译枚举
+            for raw, readable in enum_translations.items():
+                conclusion = conclusion.replace(raw, readable)
+
+            # 清理 N/A 残留
+            conclusion = re.sub(
+                r"\b[A-Za-z\u4e00-\u9fff]{1,10}:\s*(?:N/A|n/a|NA|null|暂无|无)\b",
+                "",
+                conclusion,
+            )
+            # 清理多余分隔符
+            conclusion = re.sub(r"[\s,，;|]{2,}", " ", conclusion).strip()
+            conclusion = re.sub(r"^[\s,，;|]+|[\s,，;|]+$", "", conclusion)
+
+            if NA_WHOLE.match(conclusion) or len(conclusion) < 3:
+                continue
+
+            if len(conclusion) > 45:
+                conclusion = conclusion[:43] + "…"
+
+            layer = step.layer_name
+            if layer not in seen_layer:
+                seen_layer.add(layer)
+                parts.append(conclusion)
+
+        summary_parts = parts[:3]
+        result = " | ".join(summary_parts)
+        if len(result) > 100:
+            result = result[:97] + "…"
+        return result
 
     def _build_reasoning_chain(
         self,
@@ -853,8 +986,8 @@ class MacroAgent(BaseAgent):
         layer2_result: Dict[str, Any],
     ) -> None:
         """Layer 2: 周期定位推理步骤"""
-        china_cycle = layer2_result.get("china_cycle", {})
-        us_cycle = layer2_result.get("us_cycle", {})
+        china_quadrant = layer2_result.get("china_quadrant_adjusted", layer2_result.get("china_quadrant", {}))
+        us_quadrant = layer2_result.get("us_quadrant", {})
 
         chain.add_step(ReasoningStep(
             layer_name="layer2",
@@ -862,11 +995,12 @@ class MacroAgent(BaseAgent):
             step_name="中国周期位置判定",
             input_summary=f"CAI: {layer1_result.get('china_cai', {}).get('z_score', 0):.2f}σ, 通胀: {layer1_result.get('china_inflation', {}).get('z_score', 0):.2f}σ",
             analysis_logic="根据CAI和通胀z-score在四象限中定位",
-            intermediate_conclusion=f"周期位置: {china_cycle.get('phase', 'N/A')}, 阶段: {china_cycle.get('stage', 'N/A')}",
+            intermediate_conclusion=f"周期位置: {china_quadrant.get('quadrant_cn', 'N/A')}, 信号强度: {china_quadrant.get('signal_strength', 'N/A')}",
             confidence=0.75,
             evidence=[
                 f"增长z-score: {layer1_result.get('china_cai', {}).get('z_score', 0):.2f}",
                 f"通胀z-score: {layer1_result.get('china_inflation', {}).get('z_score', 0):.2f}",
+                f"政策调节: {china_quadrant.get('policy_adjustment', 'N/A')}",
             ],
         ))
 
@@ -876,7 +1010,7 @@ class MacroAgent(BaseAgent):
             step_name="美国周期位置判定",
             input_summary=f"CAI: {layer1_result.get('us_cai', {}).get('z_score', 0):.2f}σ, 通胀: {layer1_result.get('us_inflation', {}).get('z_score', 0):.2f}σ",
             analysis_logic="根据CAI和通胀z-score在四象限中定位",
-            intermediate_conclusion=f"周期位置: {us_cycle.get('phase', 'N/A')}, 阶段: {us_cycle.get('stage', 'N/A')}",
+            intermediate_conclusion=f"周期位置: {us_quadrant.get('quadrant_cn', 'N/A')}",
             confidence=0.75,
             evidence=[
                 f"增长z-score: {layer1_result.get('us_cai', {}).get('z_score', 0):.2f}",
@@ -931,19 +1065,29 @@ class MacroAgent(BaseAgent):
         layer3_result: Dict[str, Any],
     ) -> None:
         """Layer 3: 市场定价提取推理步骤"""
-        cn_pricing = layer3_result.get("cn_pricing", {})
-        us_pricing = layer3_result.get("us_pricing", {})
+        valuation_pricing = layer3_result.get("valuation_pricing", {})
+        rate_pricing = layer3_result.get("rate_pricing", {})
+        
+        # 中国估值信息
+        csi300_erp = valuation_pricing.get("csi300_erp", {})
+        cn_erp_value = csi300_erp.get("value", csi300_erp.get("erp", 0)) if isinstance(csi300_erp, dict) else csi300_erp
+        cn_signal = csi300_erp.get("signal", "N/A") if isinstance(csi300_erp, dict) else "N/A"
+        
+        # 美国估值信息
+        sp500_erp = valuation_pricing.get("sp500_erp", {})
+        us_erp_value = sp500_erp.get("value", sp500_erp.get("erp", 0)) if isinstance(sp500_erp, dict) else sp500_erp
+        us_signal = sp500_erp.get("signal", "N/A") if isinstance(sp500_erp, dict) else "N/A"
 
         chain.add_step(ReasoningStep(
             layer_name="layer3",
             layer_number=3,
             step_name="A股市场定价分析",
-            input_summary=f"10Y国债: {cn_pricing.get('cn_10y_yield', 'N/A')}, ERP: {cn_pricing.get('csi300_erp', 'N/A')}",
+            input_summary=f"10Y国债: {rate_pricing.get('cn_10y_yield', 'N/A')}, ERP: {cn_erp_value}",
             analysis_logic="ERP反映股市相对债券的吸引力",
-            intermediate_conclusion=f"A股估值吸引力: {cn_pricing.get('valuation_signal', 'N/A')}",
+            intermediate_conclusion=f"A股估值吸引力: {cn_signal}",
             confidence=0.70,
             evidence=[
-                f"沪深300 ERP: {cn_pricing.get('csi300_erp', 'N/A')}%",
+                f"沪深300 ERP: {cn_erp_value}",
             ],
         ))
 
@@ -951,12 +1095,12 @@ class MacroAgent(BaseAgent):
             layer_name="layer3",
             layer_number=3,
             step_name="美股市场定价分析",
-            input_summary=f"10Y UST: {us_pricing.get('us_10y_yield', 'N/A')}, ERP: {us_pricing.get('sp500_erp', 'N/A')}",
+            input_summary=f"10Y UST: {rate_pricing.get('us_10y_yield', 'N/A')}, ERP: {us_erp_value}",
             analysis_logic="美股ERP反映美股相对无风险资产的吸引力",
-            intermediate_conclusion=f"美股估值吸引力: {us_pricing.get('valuation_signal', 'N/A')}",
+            intermediate_conclusion=f"美股估值吸引力: {us_signal}",
             confidence=0.70,
             evidence=[
-                f"S&P 500 ERP: {us_pricing.get('sp500_erp', 'N/A')}%",
+                f"S&P 500 ERP: {us_erp_value}",
             ],
         ))
 
@@ -969,21 +1113,33 @@ class MacroAgent(BaseAgent):
     ) -> None:
         """Layer 4: 预期差信号引擎推理步骤"""
         signals = layer4_result.get("all_signals", [])
-        cn_expectation_gap = layer4_result.get("cn_expectation_gap", {})
-        us_expectation_gap = layer4_result.get("us_expectation_gap", {})
+        
+        # 从信号列表中提取中国和美国信号
+        cn_signals = [s for s in signals if 'china' in s.get('name', '').lower() or '中国' in s.get('name', '') or 'CN' in s.get('name', '')]
+        us_signals = [s for s in signals if 'us' in s.get('name', '').lower() or '美国' in s.get('name', '') or 'US' in s.get('name', '')]
+        
+        # 计算中国预期差汇总
+        cn_bullish = len([s for s in cn_signals if s.get('direction') == 'bullish'])
+        cn_bearish = len([s for s in cn_signals if s.get('direction') == 'bearish'])
+        cn_direction = "看多" if cn_bullish > cn_bearish else "看空" if cn_bearish > cn_bullish else "中性"
+        
+        # 计算美国预期差汇总
+        us_bullish = len([s for s in us_signals if s.get('direction') == 'bullish'])
+        us_bearish = len([s for s in us_signals if s.get('direction') == 'bearish'])
+        us_direction = "看多" if us_bullish > us_bearish else "看空" if us_bearish > us_bullish else "中性"
 
         # 中国预期差
         chain.add_step(ReasoningStep(
             layer_name="layer4",
             layer_number=4,
             step_name="中国预期差分析",
-            input_summary=f"基本面CAI: {layer1_result.get('china_cai', {}).get('z_score', 0):.2f}σ, 市场定价反映: {cn_expectation_gap.get('market_reflects', 'N/A')}",
+            input_summary=f"基本面CAI: {layer1_result.get('china_cai', {}).get('z_score', 0):.2f}σ, 信号数: {len(cn_signals)}",
             analysis_logic="基本面与市场定价之差即为预期差",
-            intermediate_conclusion=f"中国预期差: {cn_expectation_gap.get('direction', 'N/A')}, 幅度: {cn_expectation_gap.get('magnitude', 0):.2f}σ",
+            intermediate_conclusion=f"中国预期差: {cn_direction}, 信号数: {len(cn_signals)}",
             confidence=0.70,
             evidence=[
-                f"预期差方向: {cn_expectation_gap.get('direction', 'N/A')}",
-                f"信号数: {len([s for s in signals if 'CN' in str(s)])}",
+                f"预期差方向: {cn_direction}",
+                f"看多信号: {cn_bullish}, 看空信号: {cn_bearish}",
             ],
         ))
 
@@ -992,13 +1148,13 @@ class MacroAgent(BaseAgent):
             layer_name="layer4",
             layer_number=4,
             step_name="美国预期差分析",
-            input_summary=f"基本面CAI: {layer1_result.get('us_cai', {}).get('z_score', 0):.2f}σ, 市场定价反映: {us_expectation_gap.get('market_reflects', 'N/A')}",
+            input_summary=f"基本面CAI: {layer1_result.get('us_cai', {}).get('z_score', 0):.2f}σ, 信号数: {len(us_signals)}",
             analysis_logic="基本面与市场定价之差即为预期差",
-            intermediate_conclusion=f"美国预期差: {us_expectation_gap.get('direction', 'N/A')}, 幅度: {us_expectation_gap.get('magnitude', 0):.2f}σ",
+            intermediate_conclusion=f"美国预期差: {us_direction}, 信号数: {len(us_signals)}",
             confidence=0.70,
             evidence=[
-                f"预期差方向: {us_expectation_gap.get('direction', 'N/A')}",
-                f"信号数: {len([s for s in signals if 'US' in str(s)])}",
+                f"预期差方向: {us_direction}",
+                f"看多信号: {us_bullish}, 看空信号: {us_bearish}",
             ],
         ))
 
@@ -1023,21 +1179,22 @@ class MacroAgent(BaseAgent):
     ) -> None:
         """Layer 4.5: 反身性与元认知推理步骤"""
         signals = layer4_result.get("all_signals", [])
-        crowding = layer45_result.get("crowding", {})
-        reflexivity = layer45_result.get("reflexivity", {})
+        pressure_meter = layer45_result.get("pressure_meter", {})
+        paradigm_stability = layer45_result.get("paradigm_stability", {})
+        lifecycle = layer45_result.get("logic_lifecycle", {})
 
         # 信号拥挤度
         chain.add_step(ReasoningStep(
             layer_name="layer4_5",
             layer_number=4.5,
             step_name="信号拥挤度分析",
-            input_summary=f"信号数: {len(signals)}, 拥挤度: {crowding.get('level', 'N/A')}",
+            input_summary=f"信号数: {len(signals)}, 压力等级: {pressure_meter.get('level', 'N/A')}",
             analysis_logic="拥挤信号存在反转风险",
-            intermediate_conclusion=f"拥挤度等级: {crowding.get('level', 'N/A')}",
+            intermediate_conclusion=f"拥挤度等级: {pressure_meter.get('level', 'N/A')}",
             confidence=0.60,
             evidence=[
-                f"拥挤度: {crowding.get('level', 'N/A')}",
-                f"建议: {crowding.get('suggestion', 'N/A')}",
+                f"压力得分: {pressure_meter.get('total_score', 'N/A')}",
+                f"范式稳定性: {paradigm_stability.get('status', 'N/A')}",
             ],
             uncertainty_sources=[
                 "拥挤度指标定义较主观",
@@ -1050,12 +1207,13 @@ class MacroAgent(BaseAgent):
             layer_name="layer4_5",
             layer_number=4.5,
             step_name="反身性评估",
-            input_summary=f"自反馈指数: {reflexivity.get('self_feedback_index', 'N/A')}, 框架共识: {reflexivity.get('framework_consensus', 'N/A')}",
+            input_summary=f"逻辑生命周期: {lifecycle.get('stage', 'N/A')}, 范式状态: {paradigm_stability.get('status', 'N/A')}",
             analysis_logic="高反身性意味着预期容易自我强化或反转",
-            intermediate_conclusion=f"反身性等级: {reflexivity.get('level', 'N/A')}",
+            intermediate_conclusion=f"反身性等级: {pressure_meter.get('level', 'N/A')}",
             confidence=0.55,
             evidence=[
-                f"自反馈指数: {reflexivity.get('self_feedback_index', 'N/A')}",
+                f"压力等级: {pressure_meter.get('level', 'N/A')}",
+                f"范式稳定性: {paradigm_stability.get('status', 'N/A')}",
             ],
             uncertainty_sources=[
                 "反身性难以量化",
@@ -1080,14 +1238,14 @@ class MacroAgent(BaseAgent):
             layer_name="layer5",
             layer_number=5,
             step_name="资产配置决策",
-            input_summary=f"周期位置: {layer2_result.get('china_cycle', {}).get('phase', 'N/A')}, 预期差信号: {len(layer4_result.get('all_signals', []))}",
+            input_summary=f"周期位置: {layer2_result.get('china_quadrant_adjusted', {}).get('quadrant_cn', 'N/A')}, 预期差信号: {len(layer4_result.get('all_signals', []))}",
             analysis_logic="综合周期位置、预期差、反身性给出配置建议",
-            intermediate_conclusion=f"A股配置: {allocation.get('cn_equity', 'N/A')}, 美股配置: {allocation.get('us_equity', 'N/A')}",
+            intermediate_conclusion=f"A股配置: {allocation.get('csi300_500', 'N/A')}, 美股配置: {allocation.get('us_assets', 'N/A')}",
             confidence=0.70,
             evidence=[
-                f"A股: {allocation.get('cn_equity', 'N/A')}",
-                f"美股: {allocation.get('us_equity', 'N/A')}",
-                f"债券: {allocation.get('bonds', 'N/A')}",
+                f"A股: {allocation.get('csi300_500', 'N/A')}",
+                f"美股: {allocation.get('us_assets', 'N/A')}",
+                f"债券: {allocation.get('cn_gov_bond', 'N/A')}",
             ],
         ))
 
@@ -1096,7 +1254,7 @@ class MacroAgent(BaseAgent):
             layer_name="layer5",
             layer_number=5,
             step_name="风险调整后配置",
-            input_summary=f"拥挤度: {layer45_result.get('crowding', {}).get('level', 'N/A')}, 反身性: {layer45_result.get('reflexivity', {}).get('level', 'N/A')}",
+            input_summary=f"拥挤度: {layer45_result.get('pressure_meter', {}).get('level', 'N/A')}, 范式稳定性: {layer45_result.get('paradigm_stability', {}).get('status', 'N/A')}",
             analysis_logic="根据拥挤度和反身性调整配置权重",
             intermediate_conclusion=f"风险调整后: {risk_adjusted.get('adjusted_view', 'N/A')}",
             confidence=0.65,
