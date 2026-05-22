@@ -4,6 +4,7 @@ Layer 3: 市场定价提取——从市场价格反推市场已定价的内容
 混合模式：数值计算（ERP、信用利差等）+ LLM解读（市场定价含义）
 """
 
+import math
 from typing import Dict, List, Any, Optional
 import numpy as np
 
@@ -360,9 +361,8 @@ def estimate_erp_percentile(erp: float) -> float:
     # 假设ERP均值5%，标准差2%
     mean, std = 5.0, 2.0
     z = (erp - mean) / std if std != 0 else 0
-    # 转换为百分位
-    import scipy.stats as stats
-    return min(100, max(0, stats.norm.cdf(z) * 100))
+    # 转换为百分位（math.erf 与 scipy.stats.norm.cdf 数学等价）
+    return min(100, max(0, 0.5 * (1 + math.erf(z / math.sqrt(2))) * 100))
 
 
 def estimate_spread_percentile(spread: float, spread_type: str) -> float:
@@ -373,8 +373,7 @@ def estimate_spread_percentile(spread: float, spread_type: str) -> float:
     }
     mean, std = params.get(spread_type, (1.0, 0.5))
     z = (spread - mean) / std if std != 0 else 0
-    import scipy.stats as stats
-    return min(100, max(0, stats.norm.cdf(z) * 100))
+    return min(100, max(0, 0.5 * (1 + math.erf(z / math.sqrt(2))) * 100))
 
 
 def calculate_percentile(value: float, historical: List[float]) -> float:

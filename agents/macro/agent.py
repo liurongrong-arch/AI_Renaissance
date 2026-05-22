@@ -230,12 +230,12 @@ class MacroAgent(BaseAgent):
         self._llm_client = llm_client
         logger.info(f"[{self.name}] LLM客户端已设置")
 
-    def analyze(self, query: str = None, period: str = None) -> Signal:
+    def analyze(self, stock_code: str, period: str = None) -> Signal:
         """
         执行7层流水线分析。
 
         Args:
-            query: 分析查询（可选，用于决定分析重点）
+            stock_code: 股票代码（与其他 Agent 签名对齐）
             period: 分析时段，如 "2026-05-05至2026-05-12"
         
         Returns:
@@ -274,6 +274,7 @@ class MacroAgent(BaseAgent):
             
             # 汇总最终 Signal
             final_signal = layer5_result.get("macro_signal")
+            final_signal.stock_code = stock_code
             
             # ========== 构建推理链 ==========
             reasoning_chain = self._build_reasoning_chain(
@@ -318,7 +319,7 @@ class MacroAgent(BaseAgent):
             
         except Exception as e:
             logger.error(f"[{self.name}] 分析失败: {e}")
-            return self._create_error_signal(str(e))
+            return self._create_error_signal(str(e), stock_code=stock_code)
 
     # =============================================================================
     # 数据获取层（伪代码）
@@ -1272,13 +1273,14 @@ class MacroAgent(BaseAgent):
     # 辅助方法
     # =============================================================================
 
-    def _create_error_signal(self, error_message: str) -> Signal:
+    def _create_error_signal(self, error_message: str, stock_code: str = "") -> Signal:
         """创建错误信号"""
         return neutral_signal(
             confidence=0.1,
             reasoning=f"宏观分析执行失败: {error_message}",
             source=self.name,
             signal_type=self.signal_type,
+            stock_code=stock_code,
             meta={
                 "error": error_message,
                 "needs_human_review": True,
