@@ -8,11 +8,16 @@ Agent基类 - 所有Agent的父类
   - Orchestrator Agent 不加载 Skill，负责编排仲裁
 """
 
+from __future__ import annotations
+
 import asyncio
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from loguru import logger
-from agentscope.agent import AgentBase as AgentScopeAgentBase
+try:
+    from agentscope.agent import AgentBase as AgentScopeAgentBase
+except ModuleNotFoundError:  # AgentScope 0.1.x exposes AgentBase from agentscope.agents.
+    from agentscope.agents import AgentBase as AgentScopeAgentBase
 
 from agents.agentscope_message import (
     AgentScopeMessageError,
@@ -47,7 +52,7 @@ class BaseAgent(AgentScopeAgentBase):
         if self.__class__.analyze is BaseAgent.analyze:
             raise TypeError(f"{self.__class__.__name__} must implement analyze()")
 
-        super().__init__()
+        super().__init__(name=name)
         self.name = name
         self.config = config or {}
         self._skills: Dict[str, str] = {}  # skill_name -> skill_content
