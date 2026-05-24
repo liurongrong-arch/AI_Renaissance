@@ -291,6 +291,7 @@ class TechnicalAgent(BaseAgent):
             **primary_meta,
             "data_status": data_status,
             "rows_count": len(rows),
+            "ohlcv_rows": self._chart_ohlcv_rows(rows),
             "data_period": data_period,
             "analysis_start_date": data_period.get("start"),
             "analysis_end_date": data_period.get("end"),
@@ -863,6 +864,24 @@ class TechnicalAgent(BaseAgent):
         start = str((rows[0] or {}).get("date") or (rows[0] or {}).get("trade_date") or "")[:10]
         end = str((rows[-1] or {}).get("date") or (rows[-1] or {}).get("trade_date") or "")[:10]
         return {"start": start, "end": end, "rows_count": len(rows)}
+
+    def _chart_ohlcv_rows(self, rows: List[Dict[str, Any]], limit: int = 240) -> List[Dict[str, Any]]:
+        """为 debug_ui K 线图输出精简 OHLCV 数据。"""
+        chart_rows: List[Dict[str, Any]] = []
+        for row in rows[-limit:]:
+            chart_rows.append(
+                {
+                    "date": str(row.get("date") or row.get("trade_date") or "")[:10],
+                    "open": self._to_float(row.get("open")),
+                    "high": self._to_float(row.get("high")),
+                    "low": self._to_float(row.get("low")),
+                    "close": self._to_float(row.get("close")),
+                    "volume": self._to_float(row.get("volume")),
+                    "volume_unit": row.get("volume_unit") or "手",
+                    "volume_raw_unit": row.get("volume_raw_unit"),
+                }
+            )
+        return chart_rows
 
     def _extract_trigger_pattern(self, signals: List[str]) -> str:
         if not signals:

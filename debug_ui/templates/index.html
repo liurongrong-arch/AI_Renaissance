@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Renaissance · Debug Console</title>
+<script src="/static/echarts.min.js"></script>
 <style>
   /* ===== Reset & Variables ===== */
   *{margin:0;padding:0;box-sizing:border-box}
@@ -104,6 +105,9 @@
 
   /* ===== Result Area ===== */
   .result-area{display:none}
+  .chart-box{background:var(--bg-1);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 18px;margin-bottom:18px}
+  .chart-title{font-size:13px;font-weight:700;color:var(--text-1);margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .chart-inner{height:360px;width:100%}
 
   /* ===== Signal Header Bar ===== */
   .sig-bar{
@@ -598,6 +602,7 @@ function renderResult(sig, agentName, stockCode) {
   // === Technical Agent: 数据起止日期置顶展示，方便校验数据与模型结果 ===
   if (isTechnical) {
     html += renderTechnicalDataPeriodBanner(meta);
+    html += renderTechnicalKlineChartBox(meta);
   }
 
   // === Reasoning ===
@@ -649,6 +654,7 @@ function renderResult(sig, agentName, stockCode) {
 
   document.getElementById("resultArea").innerHTML = html;
   document.getElementById("resultArea").style.display = "block";
+  if (isTechnical) setTimeout(() => renderTechnicalKlineChart(meta), 0);
 
   // Animate gauge after render
   if (hasTriple) {
@@ -678,6 +684,69 @@ function renderTechnicalDataPeriodBanner(meta) {
     </div>
     <div style="font-size:12px;color:var(--text-2);margin-top:8px">说明：这里展示的是实际参与模型计算的行情首尾日期，可能不同于请求的 start/end（非交易日或数据源返回范围会被过滤）。</div>
   </div>`;
+}
+
+function renderTechnicalKlineChartBox(meta) {
+  const rows = meta.ohlcv_rows || [];
+  if (!rows.length) return "";
+  const period = meta.data_period || {};
+  return `<div class="chart-box">
+    <div class="chart-title">📊 OHLCV K线图 · ${escapeHtml(formatDataPeriod(period))}</div>
+    <div class="chart-inner" id="technicalKlineChart"></div>
+  </div>`;
+}
+
+function renderTechnicalKlineChart(meta) {
+  const rows = (meta.ohlcv_rows || []).filter(r => r && r.open != null && r.close != null && r.low != null && r.high != null);
+  const el = document.getElementById("technicalKlineChart");
+  if (!el || !rows.length || typeof echarts === "undefined") return;
+  const chart = echarts.init(el);
+  const dates = rows.map(r => r.date || "");
+  const ohlc = rows.map(r => [Number(r.open), Number(r.close), Number(r.low), Number(r.high)]);
+  const volumes = rows.map(r => Number(r.volume || 0));
+  chart.setOption({
+    backgroundColor: "transparent",
+    animation: false,
+    legend: { data: ["K线", "成交量"], top: 4, textStyle: { color: "#94a3c0", fontSize: 11 } },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "cross" },
+      backgroundColor: "#111827ee",
+      borderColor: "#2a3654",
+      textStyle: { color: "#e8edf5", fontSize: 11, fontFamily: "SF Mono, monospace" },
+      formatter: function(params) {
+        if (!params || !params.length) return "";
+        const idx = params[0].dataIndex;
+        const r = rows[idx] || {};
+        const volUnit = r.volume_unit || "手";
+        return `<b>${escapeHtml(r.date || "")}</b><br/>` +
+          `开:${fmtNumber(r.open, 2)} 高:${fmtNumber(r.high, 2)}<br/>` +
+          `低:${fmtNumber(r.low, 2)} 收:${fmtNumber(r.close, 2)}<br/>` +
+          `量:${fmtNumber(r.volume, r.volume_raw_unit === "股" ? 2 : 0)}${escapeHtml(volUnit)}`;
+      },
+    },
+    grid: [
+      { left: 60, right: 58, top: 46, height: 210 },
+      { left: 60, right: 58, top: 278, height: 54 },
+    ],
+    xAxis: [
+      { type: "category", data: dates, scale: true, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3654" } }, axisLabel: { color: "#5b6d8a", fontSize: 10, rotate: rows.length > 80 ? 45 : 0 } },
+      { type: "category", data: dates, gridIndex: 1, scale: true, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3654" } }, axisLabel: { show: false } },
+    ],
+    yAxis: [
+      { scale: true, position: "right", splitLine: { lineStyle: { color: "#1a2234" } }, axisLabel: { color: "#5b6d8a", fontSize: 10 } },
+      { scale: true, gridIndex: 1, position: "right", splitLine: { show: false }, axisLabel: { color: "#5b6d8a", fontSize: 10 } },
+    ],
+    dataZoom: [
+      { type: "inside", xAxisIndex: [0, 1], start: Math.max(0, 100 - 80 * 100 / rows.length), end: 100 },
+      { show: true, xAxisIndex: [0, 1], bottom: 4, height: 18, borderColor: "#2a3654", textStyle: { color: "#5b6d8a" }, start: Math.max(0, 100 - 80 * 100 / rows.length), end: 100 },
+    ],
+    series: [
+      { name: "K线", type: "candlestick", data: ohlc, itemStyle: { color: "#00e676", color0: "#ff5252", borderColor: "#00e676", borderColor0: "#ff5252" } },
+      { name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: volumes, itemStyle: { color: "#00e5ff55" } },
+    ],
+  });
+  window.addEventListener("resize", () => chart.resize(), { once: false });
 }
 
 function renderTechnicalReportsDashboard(sig, meta) {
