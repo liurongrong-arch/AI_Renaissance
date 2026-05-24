@@ -156,10 +156,6 @@ Orchestrator Agent（编排，开发2组）
 | 产业链联动 | 上下游分析 | P2 |
 | 竞争格局 | 市场份额 | P3 |
 
-**当前状态：**
-
-`main` 当前包含 `skills/Industry/` 产业链实现；该实现未接入 `IndustryAgent.analyze()`。
-
 ---
 
 ### 📰 舆情情感 Agent
