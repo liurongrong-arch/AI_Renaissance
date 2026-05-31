@@ -108,7 +108,7 @@ BUILT_IN_MAP = {
     "688008.SH": "ai-chip",            # 澜起科技
     "688256.SH": "ai-chip",            # 寒武纪
     "688041.SH": "ai-chip",            # 海光信息
-    "688521.SH": "ai-chip",            # 芯原股份
+    "688521.SH": "ai-chip",            # 芯原股份 - GPU/加速器设计
     "300124.SZ": "ai-energy",          # 汇川技术
     "600885.SH": "ai-energy",          # 宏发股份
     "002028.SZ": "ai-energy",          # 思源电气
