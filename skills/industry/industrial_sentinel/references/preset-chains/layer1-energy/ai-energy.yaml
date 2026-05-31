@@ -245,6 +245,10 @@ preset_indicators:
       source: "能源局"
 
 preset_companies:
+  - code: "002922.SZ"
+    name: 伊戈尔
+    position: "中游输变电设备+电源"
+    logic: "电力电子变压器龙头，数据中心移相变压器核心供应商，海外AIDC供电方案+储能PCS+车载OBC三轮驱动"
   - code: "002028.SZ"
     name: 思源电气
     position: "中游输变电设备"

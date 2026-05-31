@@ -5,6 +5,8 @@
 
 import json
 import logging
+import sys
+import importlib.util
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -100,7 +102,7 @@ STOCK_NAME_TO_CODE = {
     "国电南瑞": "600406.SH", "平高电气": "600312.SH", "许继电气": "000400.SZ",
     "中国西电": "601179.SH", "英维克": "002837.SZ", "高澜股份": "300499.SZ",
     "同飞股份": "300990.SZ", "科华数据": "002335.SZ", "科士达": "002518.SZ",
-    "光环新网": "300383.SZ", "润泽科技": "300442.SZ",
+    "光环新网": "300383.SZ", "润泽科技": "300442.SZ", "伊戈尔": "002922.SZ",
     "绿的谐波": "688017.SH", "拓普集团": "601689.SH", "三花智控": "002050.SZ",
     "双环传动": "002472.SZ", "鸣志电器": "603728.SH", "柯力传感": "603662.SH",
     "奥比中光": "688322.SH", "石头科技": "688169.SH",
@@ -128,21 +130,13 @@ def _resolve_input(stock_code: str) -> str:
     return _normalize_a_stock_code(s.upper())
 
 
-NAME_TO_PRESET = {
-    "芯原": "ai-chip", "寒武纪": "ai-chip", "海光": "ai-chip",
-    "中芯": "ai-chip", "中微": "ai-chip", "澜起": "ai-chip",
-    "通富": "ai-chip", "华虹": "ai-chip", "长电": "ai-chip",
-    "旭创": "optical-module", "新易盛": "optical-module",
-    "天孚": "optical-module", "仕佳": "optical-module",
-    "德科立": "optical-module", "源杰": "optical-module",
-    "锗业": "optical-module", "光迅": "optical-module",
-    "深南": "ai-infrastructure", "生益": "ai-infrastructure",
-    "东山": "ai-infrastructure", "胜宏": "ai-infrastructure",
-    "沪电": "ai-infrastructure", "立讯": "ai-infrastructure",
-    "阳光电源": "ai-energy", "汇川": "ai-energy",
-    "绿的谐波": "robotics", "拓普": "robotics", "三花": "robotics",
-    "埃斯顿": "robotics", "机器人": "robotics",
-}
+# 导入大规模名称映射（v2.0: 275+关键词覆盖6个preset）
+import importlib.util
+_spec = importlib.util.spec_from_file_location("name_preset_mapping", Path(__file__).parent / "name_preset_mapping.py")
+_name_preset_module = importlib.util.module_from_spec(_spec)
+sys.path.insert(0, str(Path(__file__).parent))
+_spec.loader.exec_module(_name_preset_module)
+NAME_TO_PRESET = _name_preset_module.NAME_TO_PRESET_V2
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -157,7 +151,7 @@ BUILT_IN_MAP = {
     "688008.SH": "ai-chip",            # 澜起科技
     "688256.SH": "ai-chip",            # 寒武纪
     "688041.SH": "ai-chip",            # 海光信息
-    "688521.SH": "ai-chip",            # 芯原股份 - GPU/加速器设计
+    "688521.SH": "ai-chip",            # 芯原股份
     "002156.SZ": "ai-chip",            # 通富微电
     "600584.SH": "ai-chip",            # 长电科技
     "688347.SH": "ai-chip",            # 华虹半导体
@@ -217,7 +211,7 @@ BUILT_IN_MAP = {
     "301309.SZ": "ai-infrastructure",  # 德明利
     "603893.SH": "ai-infrastructure",  # 瑞芯微
 
-    # ── L1 能源 (15) ──
+    # ── L1 能源 (16) ──
     "300274.SZ": "ai-energy",          # 阳光电源
     "300124.SZ": "ai-energy",          # 汇川技术
     "002028.SZ": "ai-energy",          # 思源电气
@@ -233,6 +227,7 @@ BUILT_IN_MAP = {
     "300383.SZ": "ai-energy",          # 光环新网
     "300442.SZ": "ai-energy",          # 润泽科技
     "600885.SH": "ai-energy",          # 宏发股份
+    "002922.SZ": "ai-energy",          # 伊戈尔
 
     # ── L5 机器人 (13) ──
     "688017.SH": "robotics",           # 绿的谐波
@@ -250,7 +245,6 @@ BUILT_IN_MAP = {
     "002031.SZ": "robotics",           # 巨轮智能
 
     # ── 用户持仓补充 ──
-    "002156.SZ": "ai-chip",            # 通富微电 (duplicate intentional - 封测龙头)
     "300757.SZ": "ai-infrastructure",  # 罗博特科
     "000700.SZ": "robotics",           # 模塑科技
 }

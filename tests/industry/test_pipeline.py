@@ -17,9 +17,9 @@ import sys
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
-SKILL_DIR = REPO_ROOT / "skills" / "industry" / "industrial_sentinel"
+SKILL_DIR = Path(__file__).parent.parent.parent / "skills" / "industry" / "industrial_sentinel"
 sys.path.insert(0, str(SKILL_DIR))
+sys.path.insert(0, str(SKILL_DIR / "core"))
 
 
 def test_pipeline():
