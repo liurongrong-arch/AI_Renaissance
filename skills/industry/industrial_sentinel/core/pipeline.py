@@ -169,6 +169,14 @@ def determine_lifecycle_from_real_data(real_data: Optional[Dict]) -> Dict[str, A
         }
 
     signals = real_data.get("real_signals", {})
+    
+    # V4.6 优化1: 优先检查结构转型
+    seg_data = signals.get("segment_data", [])
+    if seg_data and len(seg_data) >= 2:
+        seg_result = determine_lifecycle_from_segments(seg_data)
+        if seg_result and seg_result.get("transition_score", 0) >= 0.35:
+            return seg_result
+    
     rev_growth = _safe_num(signals.get("revenue_growth"))
     gm = _safe_num(signals.get("gross_margin"))
     backlog_raw = signals.get("order_backlog")
@@ -264,6 +272,17 @@ def determine_inflection_from_real_data(real_data: Optional[Dict]) -> Dict[str, 
 
     signals = real_data.get("real_signals", {})
     # 调用 system_a 的 V4.5 真实信号路径
+    # V4.6 优化3: 行业交叉验证信号注入
+    cross_result = cross_validate_with_industry(real_data)
+    validation_signals = cross_result.get("validation_signals", [])
+    if validation_signals:
+        existing = signals.get("inflection_signals", [])
+        if isinstance(existing, list):
+            existing.extend(validation_signals)
+        else:
+            existing = validation_signals
+        signals["inflection_signals"] = existing
+    
     result = determine_inflection_state(
         real_signals=signals,
         min_signals_required=2,
