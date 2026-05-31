@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+logger = logging.getLogger(__name__)
+
 # 确保 skill 根目录在 sys.path
 SKILL_DIR = Path(__file__).parent.resolve()
 if str(SKILL_DIR) not in sys.path:
@@ -178,6 +180,11 @@ def run_industrial_sentinel(
             weight = 0.5
         elif state_code == "post_inflection_decline":
             weight = 0.1
+
+        # 数据缺失时保留微弱声音，避免在 Orchestrator 中被完全消音
+        if not real_data or real_data.get("_missing_count", 0) >= 3:
+            if weight < 0.2:
+                weight = 0.2
 
         # ── Step 9: 数据质量 ──
         data_quality = "complete"
