@@ -4,8 +4,7 @@ Industrial Sentinel — Agent 调用入口
 供 AI_Renaissance Agent 通过 SkillRegistry 加载调用
 
 用法:
-    from runtime import run_industrial_sentinel
-    result = run_industrial_sentinel("002916.SZ")
+        result = run_industrial_sentinel("002916.SZ")
 """
 
 import sys
@@ -97,7 +96,7 @@ def run_industrial_sentinel(
             revenue_growth = float(rs.get("revenue_growth", 0) or 0)
             rd_ratio = float(rs.get("rd_ratio", rs.get("research_expense_ratio", 0)) or 0)
             # 轻资产程度：优先用行业基准值，有固定资产数据则计算
-            preset_for_benchmark = preset_name or stock_info.get("preset", "generic")
+            preset_for_benchmark = stock_info.get("preset", "generic")
             asset_lightness = get_asset_lightness_benchmark(
                 preset_name=preset_for_benchmark,
                 industry_name=industry_name
