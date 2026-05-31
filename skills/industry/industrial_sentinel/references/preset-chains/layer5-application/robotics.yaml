@@ -100,6 +100,53 @@ value_allocation:
   downstream_share: "35-40%"
   bargain_power: "上游减速器/执行器议价权最强(日本垄断+需重新设计)"
 
+cross_verify:
+  upstream:
+    - name: 谐波/RV减速器
+      metrics:
+        - "谐波减速器国产化率35%→50%"
+        - "人形机器人关节减速器单价$800"
+      pool: ["688017.SH", "002747.SZ"]
+    - name: 电机/执行器（空心杯/无框力矩）
+      metrics:
+        - "空心杯电机国产替代加速"
+        - "特斯拉Optimus单台电机>40个"
+      pool: ["300124.SZ", "002979.SZ"]
+    - name: 传感器（力矩/视觉/触觉）
+      metrics:
+        - "六维力传感器单价$3000→$1500"
+        - "3D视觉传感器出货+120%"
+      pool: ["688160.SH"]
+  midstream:
+    - name: 人形机器人本体
+      metrics:
+        - "特斯拉Optimus量产BOM<$4万"
+        - "国内人形机器人整机>30家"
+      pool: ["300024.SZ"]
+    - name: 控制器/运动规划
+      metrics:
+        - "端到端VLA模型成功率>85%"
+        - "Sim2Real迁移训练成为标配"
+      pool: ["688017.SH"]
+  downstream:
+    - name: 汽车制造（第一批落地场景）
+      metrics:
+        - "特斯拉工厂Optimus部署>1000台"
+        - "汽车焊装/搬运自动化率>80%"
+      pool: ["000625.SZ"]
+    - name: 物流仓储
+      metrics:
+        - "仓储机器人年出货>50万台"
+        - "电商履约中心机器人密度翻倍"
+      pool: ["688169.SH"]
+  external_indicators:
+    - name: "特斯拉Optimus里程碑"
+      metric: "2026年5月定点→7月量产"
+      source: "特斯拉官方/产业链验证"
+    - name: "中国人形机器人政策"
+      metric: "2026年量产目标>1万台"
+      source: "工信部《人形机器人创新发展指导意见》"
+
 investment_thesis: |
   机器人是AI在物理世界的价值兑现，从"能对话"到"能办事"。
   核心矛盾：技术成熟度快速提升 vs 成本控制/量产能力的追赶。
