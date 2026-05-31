@@ -8,7 +8,6 @@ Industrial Sentinel — Agent 调用入口
     result = run_industrial_sentinel("002916.SZ")
 """
 
-import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
