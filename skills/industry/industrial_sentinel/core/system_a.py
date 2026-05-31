@@ -663,14 +663,28 @@ def determine_inflection_state_v45(real_signals, min_signals_required=2):
     inv_days = _safe_float(real_signals.get("inventory_days"))
     capex = str(real_signals.get("capex_plan", "")).lower()
 
+    # V4.6 优化2: 毛利率历史趋势
+    gm_history = real_signals.get("gross_margin_history", [])
+    gm_trend_up = False
+    gm_trend_strong = False
+    if isinstance(gm_history, list) and len(gm_history) >= 3:
+        gm_trend_up = all(gm_history[i] < gm_history[i+1] for i in range(len(gm_history)-1))
+        if gm_trend_up and gm_history[-1] > 30:
+            gm_trend_strong = (gm_history[-1] - gm_history[0]) > 5
+    # V4.6: 业务分部数据（结构转型判定）
+    segment_data = real_signals.get("segment_data", [])
+
     # P1-1: 读取用户回填的定性信号作为bonus
     inflection_bonus = _parse_string_list(real_signals.get("inflection_signals", []))
     lifecycle_bonus = _parse_string_list(real_signals.get("lifecycle_signals", []))
     # 关键词→拐点阶段映射
     BONUS_KEYWORD_MAP = {
-        "confirmed": ["加速", "突破", "放量", "提价", "涨价", "缺货", "爆单", "产能紧张", "催化剂"],
-        "early": ["复苏", "回暖", "政策", "试点", "导入", "验证", "送样", "通过"],
-        "pre": ["低迷", "探底", "观望", "去库存", "低谷"],
+        "confirmed": ["加速", "突破", "放量", "提价", "涨价", "缺货", "爆单", "产能紧张", "催化剂",
+                      "毛利率提升", "毛利改善", "技术溢价", "毛利率创新高"],
+        "early": ["复苏", "回暖", "政策", "试点", "导入", "验证", "送样", "通过",
+                  "毛利修复", "结构改善", "亏损收窄"],
+        "pre": ["低迷", "探底", "观望", "去库存", "低谷",
+                "毛利承压", "结构阵痛", "毛利率低位"],
         "late": ["过热", "泡沫", "疯狂", "抢装", "囤货", "高位"],
         "post": ["过剩", "降价", "暴跌", "砍单", "收缩", "去产能"],
     }
@@ -689,13 +703,16 @@ def determine_inflection_state_v45(real_signals, min_signals_required=2):
             if price_yoy is not None and price_yoy < 0: m.append(f"价格同比 {price_yoy:.1f}% < 0")
             if capex in ("none", ""): m.append("扩产计划：无")
             if backlog is not None and backlog < 20: m.append(f"订单backlog {backlog:.1f} 低位")
+            if gm is not None and gm < 15: m.append(f"毛利率 {gm:.1f}% < 15% 低位")
         elif tag == "early":
             if rev_growth is not None and 5 <= rev_growth < 20: m.append(f"营收增速 {rev_growth:.1f}% 温和复苏")
             if util is not None and 80 <= util < 85: m.append(f"产能利用率 {util:.1f}% 回升中")
             if price_yoy is not None and 0 <= price_yoy < 5: m.append(f"价格同比 {price_yoy:.1f}% 止跌")
             if capex in ("planned", "规划中"): m.append("扩产：已规划")
             if backlog is not None and 20 <= backlog < 50: m.append(f"订单backlog {backlog:.1f} 改善")
-            if gm is not None and gm < 0: m.append(f"毛利率 {gm:.1f}% 仍为负")
+            if gm_trend_up and gm is not None and gm < 0: m.append(f"毛利率 {gm:.1f}% 仍为负，但趋势修复中")
+            if gm_trend_up and gm is not None and 15 <= gm < 30: m.append(f"毛利率 {gm:.1f}% 连续{len(gm_history)}期修复中")
+            if not gm_trend_up and gm is not None and gm < 0: m.append(f"毛利率 {gm:.1f}% 仍为负")
         elif tag == "confirmed":
             if rev_growth is not None and rev_growth >= 20: m.append(f"营收增速 {rev_growth:.1f}% >= 20% 加速")
             if util is not None and util >= 85: m.append(f"产能利用率 {util:.1f}% >= 85% 紧张")
@@ -703,11 +720,18 @@ def determine_inflection_state_v45(real_signals, min_signals_required=2):
             if capex in ("underway", "进行中", "aggressive", "激进"): m.append("扩产：已启动")
             if backlog is not None and backlog >= 50: m.append(f"订单backlog {backlog:.1f} 高位")
             if gm is not None and gm >= 0: m.append(f"毛利率 {gm:.1f}% 修复至非负")
+            if gm_trend_strong: m.append(f"毛利率连续{len(gm_history)}期上升 {gm_history[0]}%→{gm_history[-1]}%，技术溢价验证")
+            # V4.6: 结构转型确认
+            if segment_data:
+                new_segs = [s for s in segment_data if s.get("revenue_growth", 0) > 50]
+                if new_segs and sum(s.get("revenue_mix", 0) for s in new_segs) >= 30:
+                    m.append(f"新业务占比≥30%且增速>50%，结构转型确认")
         elif tag == "late":
             if util is not None and util >= 95: m.append(f"产能利用率 {util:.1f}% >= 95% 瓶颈")
             if price_yoy is not None and price_yoy >= 15: m.append(f"价格同比 {price_yoy:.1f}% >= 15% 高位")
             if inv_days is not None and inv_days > 60: m.append(f"库存天数 {inv_days:.1f} > 60 补库过激")
             if capex in ("aggressive", "激进"): m.append("扩产：激进")
+            if gm_history and len(gm_history) >= 2 and gm_history[-1] > 40 and gm_history[-1] < gm_history[-2]: m.append(f"毛利率 {gm_history[-1]}% 高位环比下滑，警惕过热")
             mom = str(real_signals.get("price_mom_trend", "")).lower()
             if mom in ("slowing", "declining", "放缓", "下滑"): m.append("价格环比：放缓")
         elif tag == "post":
@@ -716,6 +740,7 @@ def determine_inflection_state_v45(real_signals, min_signals_required=2):
             if price_yoy is not None and price_yoy < -5: m.append(f"价格同比 {price_yoy:.1f}% < -5% 暴跌")
             if backlog is not None and backlog < 10: m.append(f"订单backlog {backlog:.1f} 枯竭")
             if inv_days is not None and inv_days > 80: m.append(f"库存天数 {inv_days:.1f} > 80 积压")
+            if gm_history and len(gm_history) >= 2 and gm_history[-1] < gm_history[-2] and gm_history[-1] < 20: m.append(f"毛利率 {gm_history[-1]}% 持续下滑<20%，竞争恶化")
         return len(m) >= min_signals_required, m
 
     checks = [("post", InflectionState.POST), ("late", InflectionState.LATE),
@@ -746,6 +771,92 @@ def determine_inflection_state_v45(real_signals, min_signals_required=2):
 # ============================================================================
 # System B: Micro 层 - 个股层面调整(V4.3 新增)
 # ============================================================================
+
+
+# ═══════════════════════════════════════════════════════════════
+# V4.6 优化4: 多维置信度评估
+# ═══════════════════════════════════════════════════════════════
+
+def calculate_confidence_v2(
+    state_code: str,
+    matched_signals: list,
+    real_data: dict,
+    min_confidence: float = 0.25,
+    max_confidence: float = 0.90,
+) -> float:
+    """多维度一致性评估 — 五维评分替换固定 CONFIDENCE_MAP。"""
+    signals = real_data.get("real_signals", {})
+    
+    # 维度1: 信号密度 (0-30分)
+    signal_count = len(matched_signals)
+    score_density = min(30, signal_count * 5)
+    
+    # 维度2: 数据质量 (10-25分)
+    data_fields = [v for v in signals.values() if v is not None]
+    total_fields = max(len(signals), 1)
+    fill_rate = len(data_fields) / total_fields
+    score_quality = 10 + fill_rate * 15
+    
+    # 维度3: 趋势一致性 (5-25分)
+    rev = _safe_float(signals.get("revenue_growth"))
+    gm = _safe_float(signals.get("gross_margin"))
+    backlog = _safe_float(signals.get("order_backlog"))
+    directions = []
+    for v in [rev, backlog]:
+        if v is not None:
+            directions.append("up" if v > 0 else "down")
+    if gm is not None:
+        directions.append("up" if gm > 20 else "down")
+    if len(directions) >= 3 and len(set(directions)) == 1:
+        score_consistency = 25
+    elif len(directions) >= 2 and len(set(directions)) == 1:
+        score_consistency = 18
+    elif len(directions) >= 1:
+        score_consistency = 10
+    else:
+        score_consistency = 5
+    
+    # 维度4: 结构健康度 (0-20分)
+    score_structure = 0
+    seg_data = signals.get("segment_data", [])
+    if seg_data:
+        new_mix = sum(s.get("revenue_mix", 0) for s in seg_data if s.get("revenue_growth", 0) > 50)
+        if new_mix >= 40: score_structure += 15
+        elif new_mix >= 30: score_structure += 10
+        elif new_mix >= 20: score_structure += 5
+    gm_hist = signals.get("gross_margin_history", [])
+    if isinstance(gm_hist, list) and len(gm_hist) >= 2:
+        if all(gm_hist[i] < gm_hist[i+1] for i in range(len(gm_hist)-1)):
+            score_structure += 5
+        if gm_hist[-1] > 30:
+            score_structure += 5
+    score_structure = min(20, score_structure)
+    
+    # 维度5: 行业验证 (0-20分)
+    score_industry = 0
+    import re
+    industry_data = real_data.get("industry_data", [])
+    for item in industry_data:
+        val = str(item.get("value", ""))
+        gm = re.search(r'(\d+)%', val)
+        if gm:
+            g = int(gm.group(1))
+            if g > 30: score_industry = max(score_industry, 15)
+            elif g > 20: score_industry = max(score_industry, 10)
+        if "渗透率" in str(item.get("indicator", "")):
+            pm = re.search(r'(\d+)%', val)
+            if pm:
+                p = int(pm.group(1))
+                if p >= 40: score_industry = max(score_industry, 15)
+                elif p >= 20: score_industry = max(score_industry, 10)
+    orders = signals.get("major_customer_orders", [])
+    if orders and any(o.get("amount", 0) > 50000 for o in orders):
+        score_industry = min(20, score_industry + 5)
+    
+    total = score_density + score_quality + score_consistency + score_structure + score_industry
+    normalized = total / 100.0
+    final = min_confidence + normalized * (max_confidence - min_confidence)
+    return round(min(max_confidence, max(min_confidence, final)), 2)
 
 
 class LifecyclePhase(Enum):
