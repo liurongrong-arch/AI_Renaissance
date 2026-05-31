@@ -131,7 +131,6 @@ def _resolve_input(stock_code: str) -> str:
 
 
 # 导入大规模名称映射（v2.0: 275+关键词覆盖6个preset）
-import importlib.util
 _spec = importlib.util.spec_from_file_location("name_preset_mapping", Path(__file__).parent / "name_preset_mapping.py")
 _name_preset_module = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -336,7 +335,6 @@ def query_eastmoney(stock_code: str) -> Optional[str]:
 
 def query_tencent_name(stock_code: str) -> Optional[str]:
     """通过腾讯API获取股票名称"""
-    import urllib.request
     
     prefix = "sh" if stock_code.endswith(".SH") else "sz"
     code = stock_code.replace(".SH", "").replace(".SZ", "")
@@ -538,7 +536,6 @@ def auto_detect_preset_with_log(stock_code: str, data_dir: Path) -> tuple[Option
 
 
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) > 1:
         code = sys.argv[1]
         data_dir = Path(__file__).parent.parent / "data"
