@@ -8,7 +8,7 @@ Skill 域: skills/industry/
 
 from typing import Optional
 from agents.base import BaseAgent
-from agents.signal import Signal, neutral_signal, bullish_signal, bearish_signal
+from agents.signal import Signal, neutral_signal
 
 try:
     from skills.industry.industrial_sentinel.runtime import run_industrial_sentinel
@@ -28,8 +28,9 @@ class IndustryAgent(BaseAgent):
     def analyze(self, stock_code: str) -> Signal:
         """运行 industrial-sentinel skill，返回行业景气度 Signal。
 
-        调用 skills/industry/industrial-sentinel/runtime.py 的
-        run_industrial_sentinel()，将其返回的 dict 包装为标准 Signal。
+        调用 skills/industry/industrial_sentinel/runtime.py 的
+        run_industrial_sentinel()，将其返回的 dict 通过
+        Signal.from_dict() 包装为标准 Signal（对齐 FinancialAgent 模式）。
         """
         self.log(f"开始行业景气分析：{stock_code}")
 
@@ -54,38 +55,10 @@ class IndustryAgent(BaseAgent):
                 signal_type=self.signal_type,
             )
 
-        direction = result.get("direction", "neutral")
-        confidence = float(result.get("confidence", 0.1))
-        reasoning = result.get("reasoning", "")
-        signals = result.get("signals", [])
-        meta = result.get("meta", {})
-
-        if direction == "bullish":
-            return bullish_signal(
-                confidence=confidence,
-                reasoning=reasoning,
-                signals=signals,
-                source=self.name,
-                stock_code=stock_code,
-                signal_type=self.signal_type,
-                meta=meta,
-            )
-        elif direction == "bearish":
-            return bearish_signal(
-                confidence=confidence,
-                reasoning=reasoning,
-                signals=signals,
-                source=self.name,
-                stock_code=stock_code,
-                signal_type=self.signal_type,
-                meta=meta,
-            )
-        else:
-            return neutral_signal(
-                confidence=confidence,
-                reasoning=reasoning,
-                source=self.name,
-                stock_code=stock_code,
-                signal_type=self.signal_type,
-                meta=meta,
-            )
+        # 对齐 FinancialAgent 模式：一行 from_dict，然后覆盖 agent 侧字段
+        signal = Signal.from_dict(result)
+        signal.source = self.name
+        signal.signal_type = self.signal_type
+        if not signal.stock_code or signal.stock_code == "unknown":
+            signal.stock_code = stock_code
+        return signal

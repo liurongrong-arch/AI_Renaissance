@@ -53,8 +53,10 @@ def run_industrial_sentinel(
     config = config or {}
 
     try:
-        from core.pipeline import run_pipeline, load_real_data, get_stock_info
-        from core.system_a import determine_inflection_from_real_data, determine_lifecycle_from_real_data
+        from core.pipeline import (
+            run_pipeline, load_real_data, get_stock_info,
+            determine_inflection_from_real_data, determine_lifecycle_from_real_data,
+        )
         from core.system_b import identify_stock_type
 
         # 加载数据
@@ -153,7 +155,7 @@ def run_industrial_sentinel(
             "direction": "neutral",
             "confidence": 0,
             "reasoning": f"Skill 核心模块加载失败: {e}",
-            "signals": {},
+            "signals": [],
             "weight": 0.0,
             "meta": {"error": str(e), "html_report": ""},
         }
@@ -162,7 +164,7 @@ def run_industrial_sentinel(
             "direction": "neutral",
             "confidence": 0,
             "reasoning": f"分析执行异常: {e}",
-            "signals": {},
+            "signals": [],
             "weight": 0.0,
             "meta": {"error": str(e), "html_report": ""},
         }
