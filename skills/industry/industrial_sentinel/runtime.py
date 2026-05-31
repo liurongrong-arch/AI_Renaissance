@@ -75,7 +75,7 @@ def run_industrial_sentinel(
             run_pipeline, load_real_data, get_stock_info,
             determine_inflection_from_real_data, determine_lifecycle_from_real_data,
         )
-        from core.system_b import identify_stock_type
+        from core.system_b import identify_stock_type, get_asset_lightness_benchmark
 
         # ── Step 1: 加载数据 ──
         real_data = load_real_data(stock_code)
@@ -96,8 +96,12 @@ def run_industrial_sentinel(
             )
             revenue_growth = float(rs.get("revenue_growth", 0) or 0)
             rd_ratio = float(rs.get("rd_ratio", rs.get("research_expense_ratio", 0)) or 0)
-            # 轻资产程度：科技股默认偏高，有固定资产数据则计算
-            asset_lightness = 0.70
+            # 轻资产程度：优先用行业基准值，有固定资产数据则计算
+            preset_for_benchmark = preset_name or stock_info.get("preset", "generic")
+            asset_lightness = get_asset_lightness_benchmark(
+                preset_name=preset_for_benchmark,
+                industry_name=industry_name
+            )
             fixed_asset = rs.get("fixed_asset")
             total_asset = rs.get("total_asset")
             if fixed_asset is not None and total_asset is not None and total_asset > 0:
