@@ -141,7 +141,16 @@ def run_industrial_sentinel(
 
         state_code = STATE_NAME_TO_CODE.get(state_name, "")
         direction = DIRECTION_MAP.get(state_code, "neutral")
-        confidence = CONFIDENCE_MAP.get(state_code, 0.30)
+        # V4.6 优化4: 多维置信度替代固定映射
+        try:
+            from core.system_a import calculate_confidence_v2
+            confidence = calculate_confidence_v2(
+                state_code=state_code,
+                matched_signals=inflection.get("matched_signals", []),
+                real_data=real_data or {},
+            )
+        except Exception:
+            confidence = 0.30  # 降级: 使用默认置信度
 
         # ── Step 7: 构建信号列表 ──
         signals = [
