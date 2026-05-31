@@ -684,7 +684,7 @@ def generate_html_v45(
         "{{system_b_core_contradiction}}": system_b.get("core_contradiction", ""),
         "{{system_b_tracking_metrics}}": system_b.get("tracking_metrics", ""),
         "{{system_b_risks}}": system_b.get("risks", ""),
-        "{{data_source_footer}}": "数据来源: AXT Inc 财报(10-K/10-Q) + 行业研报 + 新闻 | 本报告仅供研究参考，不构成投资建议",
+        "{{data_source_footer}}": "数据来源: 财报 + 行业研报 + 公开数据 | 本报告仅供研究参考，不构成投资建议",
     }
 
     html = template
