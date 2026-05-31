@@ -388,8 +388,8 @@ def load_preset_yaml(preset_name: str) -> Optional[Dict[str, Any]]:
                 if candidate.exists():
                     with open(candidate, "r", encoding="utf-8") as f:
                         return yaml.safe_load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("load_preset_yaml(%s) 失败: %s", preset_name, e)
     
     return None
 
@@ -864,8 +864,8 @@ def run_pipeline(stock_code: str) -> str:
             detected = auto_detect_preset(stock_code, DATA_DIR)
             if detected:
                 preset_name = detected
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("auto_detect_preset 失败: %s, 使用 generic", e)
 
         logger.warning("[Step 1.0] real_data 缺失，启用框架降级模式 (preset=%s)", preset_name)
         framework = build_framework_from_preset(stock_code, preset_name)
