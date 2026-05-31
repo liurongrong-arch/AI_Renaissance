@@ -130,6 +130,9 @@ def run_industrial_sentinel(
 
         # ── Step 5: 方向与置信度映射 ──
         # 🔴 关键修复: pipeline 返回的是 state_name（中文），不是 state code
+        # 同步 pipeline 框架降级状态
+        if html_path and "_framework_" in str(html_path):
+            data_quality = "framework_only"
         state_name = inflection.get("state_name", "")
         stage = lifecycle.get("stage", "")
 
