@@ -925,6 +925,7 @@ def run_pipeline(stock_code: str) -> str:
             logger.debug("自动抓取失败: %s, 进入框架降级", e)
     
     # Step 1.0b: 仍然缺失 → 框架降级
+    detected = None
     if real_data is None:
         # 先检测 preset
         preset_name = "generic"
