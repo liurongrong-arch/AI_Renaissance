@@ -258,10 +258,33 @@ def run_industrial_sentinel(
                     data_quality = "incomplete"
             else:
                 data_quality = "missing"
+        confidence_cap_reason = ""
+        matched_signal_count = len(
+            inflection.get("matched_signals_list", [])
+            or inflection.get("matched_signals", [])
+            or []
+        )
+        industry_signal_count = _count_meaningful_industry_signals(real_data)
+        if real_data and real_data.get("_missing_count", 0) >= 2:
+            confidence = min(confidence, 0.25)
+            confidence_cap_reason = "industry_and_financial_data_missing"
+        elif real_data and real_data.get("_missing_count", 0) == 1:
+            confidence = min(confidence, 0.55)
+            confidence_cap_reason = "partial_data_missing"
         if real_data and real_data.get("_preset_only"):
             data_quality = "missing"
             confidence = min(confidence, 0.35)
             weight = min(weight, 0.2)
+            confidence_cap_reason = "framework_only_preset"
+        elif (
+            not confidence_cap_reason
+            and (matched_signal_count < 2 or industry_signal_count < 2)
+        ):
+            if data_quality == "complete":
+                data_quality = "incomplete"
+            confidence = min(confidence, 0.45)
+            weight = min(weight, 0.3)
+            confidence_cap_reason = "insufficient_industry_signals"
 
         # ── Step 7.5: 降级原因提示（从 Agent config 透传） ──
         degradation_reasons = (config or {}).get("_degradation_reasons", [])
@@ -276,8 +299,8 @@ def run_industrial_sentinel(
         data_collection_tasks = []
         if degradation_reasons or data_quality != "complete":
             collection_hint = (
-                "数据获取降级。建议：1) 让 AI 搜索补充缺失数据；"
-                "2) 或手动填入 data/<code>_real_data.json 对应字段。"
+                "数据获取降级。建议通过 data_sources 补充行业景气、拐点、"
+                "财务报表和经营质量字段后重新分析。"
             )
             # 生成结构化采集任务（只要有降级或缺失就生成）
             data_collection_tasks = _build_collection_tasks(
@@ -291,6 +314,12 @@ def run_industrial_sentinel(
             stock_info.get("preset", "generic"),
             real_data,
         )
+
+        degradation_level = "none"
+        if data_quality == "missing":
+            degradation_level = "framework_only" if real_data.get("_preset_only") else "missing"
+        elif data_quality == "incomplete" or degradation_reasons:
+            degradation_level = "partial"
 
         return {
             "direction": direction,
@@ -313,6 +342,10 @@ def run_industrial_sentinel(
                 "industry": stock_info.get("industry", "未知"),
                 "preset": stock_info.get("preset", "generic"),
                 "data_quality": data_quality,
+                "degradation_level": degradation_level,
+                "confidence_cap_reason": confidence_cap_reason,
+                "industry_signal_count": industry_signal_count,
+                "system_a_matched_signal_count": matched_signal_count,
                 "stock_type": stock_type_result,
                 "adaptive_weights": get_adaptive_weights(stock_type_result, STAGE_MAP.get(stage, "default")),
                 "needs_data": data_quality != "complete" or bool(degradation_reasons),
@@ -422,7 +455,7 @@ def _build_real_data(
             "debt_ratio": extracted.get("debt_ratio") if extracted.get("debt_ratio") is not None else financial_data.get("debt_ratio"),
         }
         real_data["company_signals"] = company_signals
-        # legacy: System B 和旧模板仍读取 real_signals；System A 应优先读取 industry_signals。
+        # System B 兼容读取 real_signals；System A 应优先读取 industry_signals。
         real_data["real_signals"] = company_signals
         if isinstance(financial_data.get("peer_basket_signals"), dict):
             real_data["peer_basket_signals"] = financial_data["peer_basket_signals"]
@@ -467,6 +500,54 @@ def _normalize_industry_signals(signals: Any, industry_result: Optional[dict] = 
         normalized.setdefault("industry_signal_confidence", industry_result.get("confidence"))
 
     return normalized
+
+
+def _count_meaningful_industry_signals(real_data: Optional[Dict[str, Any]]) -> int:
+    """Count industry-level signals that can support System A.
+
+    Company financial fields are intentionally excluded: System A needs
+    industry/peer evidence, not just one company's statements.
+    """
+    if not real_data:
+        return 0
+    industry_signals = real_data.get("industry_signals")
+    if not isinstance(industry_signals, dict):
+        return 0
+
+    meaningful_keys = {
+        "industry_revenue_growth",
+        "industry_market_growth",
+        "industry_demand_growth",
+        "industry_order_growth",
+        "industry_order_backlog",
+        "industry_capacity_utilization",
+        "industry_capacity_util",
+        "industry_price_yoy",
+        "industry_price_trend",
+        "industry_inventory_days",
+        "industry_inventory_cycle",
+        "industry_capex_plan",
+        "industry_capacity_expansion",
+        "industry_policy_count",
+        "industry_policy_score",
+        "industry_penetration_rate",
+        "industry_competition_score",
+        "inflection_signals",
+        "lifecycle_signals",
+        "qualitative_signals",
+    }
+
+    count = 0
+    for key, value in industry_signals.items():
+        if key not in meaningful_keys:
+            continue
+        if value in (None, "", [], {}, "数据缺失", "待补充"):
+            continue
+        if isinstance(value, list):
+            count += len([item for item in value if item])
+        else:
+            count += 1
+    return count
 
 
 def _extract_metrics_from_statements(financial_data: dict) -> dict:

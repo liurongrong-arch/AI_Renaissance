@@ -1,6 +1,6 @@
 {
   "last_updated": "2026-05-22",
-  "description": "股票代码 → 行业 → 产业链preset chain 映射表。首次分析时自动搜索识别，确认后写入。陌生行业自动降级为generic。",
+  "description": "股票代码 → 行业 → 产业链preset chain 映射表。本文件用于本地 preset 路由和 CLI 调试；项目级行业识别优先由 data_sources 提供。陌生行业自动降级为 generic。",
   
   "mappings": {
     "000001.SZ": {

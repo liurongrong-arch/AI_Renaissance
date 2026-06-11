@@ -131,6 +131,28 @@ def _normalize_industry_input(raw_input: str) -> dict:
     return context
 
 
+def _build_preset_only_industry_result(raw_input: str, preset: str) -> dict:
+    """Build a framework-only industry payload from local preset routing."""
+    industry_name = raw_input
+    try:
+        from skills.industry.industrial_sentinel.core.pipeline import load_preset_yaml
+
+        yaml_data = load_preset_yaml(preset)
+        if isinstance(yaml_data, dict):
+            industry_name = yaml_data.get("industry_name") or yaml_data.get("chain_name") or industry_name
+    except Exception:
+        pass
+
+    return {
+        "status": "preset_only",
+        "industry_name": industry_name,
+        "preset": preset,
+        "signals": {},
+        "confidence": 0.0,
+        "source": "local_preset_routing",
+    }
+
+
 class IndustryAgent(BaseAgent):
     """行业景气 Agent（专家5组）"""
 
@@ -194,6 +216,18 @@ class IndustryAgent(BaseAgent):
 
         ds = self._data_source
         if input_context.get("preset") and not input_context["use_data_source"]:
+            if input_context["input_type"] == "industry":
+                framework_only_reason = (
+                    f"【行业输入无个股财务数据】输入 '{stock_code}' 已匹配 "
+                    f"{input_context['preset']} 分析框架；由于未提供具体股票代码，"
+                    "不会拉取单家公司财务数据，结论仅代表框架级判断。"
+                )
+            else:
+                framework_only_reason = (
+                    f"【preset 输入无个股财务数据】输入 '{stock_code}' 直接使用 "
+                    f"{input_context['preset']} 分析框架；由于未提供具体股票代码，"
+                    "不会拉取单家公司财务数据，结论仅代表框架级判断。"
+                )
             industry_result = {
                 "status": "preset_only",
                 "industry_name": (
@@ -203,19 +237,23 @@ class IndustryAgent(BaseAgent):
                 "signals": {},
                 "confidence": 0.0,
             }
+            degradation_reasons.append(framework_only_reason)
+            data_source_meta = {
+                "industry_from_cache": False,
+                "financial_from_cache": False,
+                "industry_status": "preset_only",
+                "financial_status": "not_applicable",
+                "degradation_reasons": degradation_reasons,
+            }
+        elif not input_context["use_data_source"]:
             degradation_reasons.append(
-                "industry_or_preset_input_without_stock_financial_data"
+                f"【输入无法识别】无法将 '{stock_code}' 识别为股票代码、股票名称、行业词或 preset。"
             )
             data_source_meta = {
                 "industry_from_cache": False,
                 "financial_from_cache": False,
-                "degradation_reasons": degradation_reasons,
-            }
-        elif not input_context["use_data_source"]:
-            degradation_reasons.append("unrecognized_industry_input")
-            data_source_meta = {
-                "industry_from_cache": False,
-                "financial_from_cache": False,
+                "industry_status": "missing",
+                "financial_status": "not_applicable",
                 "degradation_reasons": degradation_reasons,
             }
 
@@ -228,8 +266,27 @@ class IndustryAgent(BaseAgent):
                 data_source_meta = {
                     "industry_from_cache": data.get("industry_from_cache", False),
                     "financial_from_cache": data.get("financial_from_cache", False),
+                    "industry_status": data.get("industry_status", "missing"),
+                    "financial_status": data.get("financial_status", "missing"),
                     "degradation_reasons": degradation_reasons,
                 }
+                if (
+                    not industry_result
+                    and input_context.get("preset")
+                    and input_context.get("preset") != "generic"
+                ):
+                    industry_result = _build_preset_only_industry_result(
+                        stock_code,
+                        input_context["preset"],
+                    )
+                    preset_reason = (
+                        f"【行业情绪数据缺失】无法获取 {stock_code} 的实时行业板块景气数据，"
+                        f"已降级到本地 preset 路由：{input_context['preset']}。"
+                        "该结果只用于选择分析框架，不代表真实行业景气度。"
+                    )
+                    degradation_reasons.append(preset_reason)
+                    data_source_meta["industry_status"] = "preset_only"
+                    data_source_meta["degradation_reasons"] = degradation_reasons
                 if industry_result and industry_result.get("status") == "preset_only":
                     self.log("行业情绪数据不可用，已降级到本地 preset 路由", level="warning")
                 elif industry_result:
@@ -242,8 +299,28 @@ class IndustryAgent(BaseAgent):
                     self.log("财务数据不可用", level="warning")
             except Exception as exc:
                 self.log(f"IndustrialSentinelDataSource 获取失败：{exc}", level="error")
+                degradation_reasons.append(
+                    f"【数据源异常】IndustrialSentinelDataSource 获取失败：{exc}"
+                )
+                data_source_meta = {
+                    "industry_from_cache": False,
+                    "financial_from_cache": False,
+                    "industry_status": "error",
+                    "financial_status": "error",
+                    "degradation_reasons": degradation_reasons,
+                }
         elif input_context["use_data_source"]:
             self.log("IndustrialSentinelDataSource 不可用", level="warning")
+            degradation_reasons.append(
+                "【数据源不可用】IndustrialSentinelDataSource 未初始化，无法获取实时行业与财务数据。"
+            )
+            data_source_meta = {
+                "industry_from_cache": False,
+                "financial_from_cache": False,
+                "industry_status": "missing",
+                "financial_status": "missing",
+                "degradation_reasons": degradation_reasons,
+            }
         else:
             self.log(
                 "行业/preset 输入不请求个股数据源，仅使用 preset 框架与传入数据判断",

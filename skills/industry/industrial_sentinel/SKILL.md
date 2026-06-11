@@ -2,7 +2,7 @@
 name: industrial_sentinel
 description: |
   产业链中观分析框架。三维度独立展示：产业链景气度、产业链拐点、产业链生命周期。
-  基于真实财报数据与行业数据，删除所有评分数字，输出数据溯源+分析。
+  基于项目数据层注入的财报数据与行业数据，输出可溯源的结构化分析。
   System B 仅做个股类型判定（成长/周期/价值/主题/混合），不写交易计划。
   触发词：景气度、/景气度。
 ---
@@ -32,9 +32,9 @@ cd skills/industry/industrial_sentinel
 
 ### 1.2 触发方式
 
-**唯一触发词**：`/景气度 [代码]`
+**常见触发词**：`/景气度 [代码]`、`景气度 [行业/个股]`
 
-输入股票代码或简称，框架自动运行完整流水线，输出产业链景气度、拐点状态、生命周期、个股类型和产业链结构。
+输入股票代码、简称、行业词或 preset 时，项目级 `IndustryAgent` 会先做输入归一化，再调用项目 `data_sources/` 获取或注入标准化数据，最后由 `runtime.py` 输出行业景气度、拐点状态、生命周期、个股类型和产业链结构摘要。
 
 项目级 `IndustryAgent` 接入时只返回标准 `Signal` 和结构化 `meta`，不生成、不落盘、不返回 HTML 报告路径。HTML 仅用于 `./run.sh` / `core/pipeline.py` 的独立 CLI 或人工调试模式。
 
@@ -51,36 +51,34 @@ cd skills/industry/industrial_sentinel
 ./run.sh <code> --lite
 ```
 
-### 1.3 AI 自动执行流程（关键！）
+### 1.3 项目级执行流程（关键）
 
 **这是本 skill 的核心设计：Skill 不直接联网抓数，项目数据层负责 provider 获取、解析和缓存。**
 
-当用户输入 `/景气度 <代码>` 后，AI 必须按以下流程**全自动执行**，不要中途停下：
+当主项目调用 `IndustryAgent.analyze()` 后，应按以下流程执行：
 
 ```
-Step 1: 运行 ./run.sh <代码> 或由 IndustryAgent 调用 runtime.py
-         → 框架自动识别产业链 preset、读取项目数据层标准化输入
-         
-Step 2: 如果返回 needs_data 或 pipeline 输出"数据缺失警告" →
-         读取 data/<代码>_collection_tasks.json
-         按 ★必填 优先顺序补充行业级与同业验证数据
-         
-Step 3: 每搜到一个数据点 →
-         校验: 来源是否可靠？时效是否在要求内？
-         回填: 按 task.field_path 写入标准化数据，或由 data_sources/ 注入
-         搜不到: 按 fallback_strategy 降级，绝不编造数字
-         
-Step 4: 数据填够后 →
-         运行 python3 scripts/validate_data.py <代码> 检查完整性
-         再次运行 ./run.sh <代码> 生成完整报告
-         
-Step 5: CLI 模式返回 HTML 报告路径；项目 Agent 模式返回结构化 Signal
+Step 1: IndustryAgent 识别输入类型
+        → stock_code / stock_name / industry / preset
+
+Step 2: stock_code 输入调用 data_sources.industrial_sentinel
+        → 获取行业景气数据、财务数据、缓存状态与降级原因
+
+Step 3: industry / preset 输入只做框架路由
+        → 不把 preset 命中当作真实景气结论
+
+Step 4: runtime.py 消费标准化 industry_result / financial_data / config
+        → 生成 direction / confidence / reasoning / signals / meta
+
+Step 5: IndustryAgent 包装为标准 Signal
+        → Signal 构造异常时返回 neutral，并标记 needs_human_review
 ```
 
 **重要**：
-- 不要等用户说"去搜数据" — 看到缺失警告就自动搜
 - 不要在 Skill 内新增 provider 抓数逻辑
 - 真实 fetching/parsing/provider 放在项目 `data_sources/`
+- 数据缺失时输出低置信降级结果、`needs_data`、缺失字段和采集任务，不编造行业景气度
+- HTML 只属于 CLI / 人工调试路径，不进入 Orchestrator 主流程
 
 ---
 
@@ -172,7 +170,7 @@ Step 5: CLI 模式返回 HTML 报告路径；项目 Agent 模式返回结构化 
 - 价值分配总结
 - 标的定位
 
-**仅对光通信行业生效**，其他行业返回占位提示。
+优先使用 `references/preset-chains/` 中的产业链 preset；未覆盖行业应返回清晰的 `needs_data` 和补充任务，不返回空白结构冒充完整分析。
 
 ---
 
@@ -193,44 +191,29 @@ Step 5: CLI 模式返回 HTML 报告路径；项目 Agent 模式返回结构化 
 2. **禁止评分数字**：不展示三维评分、不推断生命周期阶段评分、不用算法打分
 3. **来源必填**：每个数据点必须携带 source + source_url + source_type + date
 4. **时间标注**：所有数据必须标注获取时间
-5. **数据验证**：运行前先用 `scripts/validate_data.py` 检查数据完整性
+5. **数据验证**：CLI 调试时先用 `scripts/validate_data.py` 检查数据完整性；项目 Agent 通过 `Signal.meta` 暴露数据质量
 
-### 3.3 AI自运行数据获取流程
+### 3.3 数据补充流程
 
-**核心设计**：框架本身不爬数据，但会自动生成"AI数据采集任务清单"，告诉对方AI"你需要搜什么、怎么搜、搜完填哪"。
+**核心设计**：框架本身不爬数据。项目级接入时，缺失数据应由 `data_sources/` 或上游数据服务补齐；独立 CLI 调试时，才使用本地数据模板与采集任务清单。
 
-**全自动流程**：
+**项目级流程**：
 
 ```bash
-# 1. 输入代码，框架自动生成采集任务清单
-python3 core/data_collection_guide.py <preset> --stock-code <code> --stock-name <name>
-# 输出: data/<code>_<preset>_collection_tasks.json
-
-# 2. 对方AI读取任务清单，按★必填优先搜索
-# 每个任务包含：搜索词、来源优先级、回填路径、校验规则、降级策略
-
-# 3. AI搜索数据 → 校验来源+日期 → 按field_path回填JSON
-# 缺失字段标注"数据缺失"，绝不编造
-
-# 4. 验证数据完整性
-python3 scripts/validate_data.py <code>
-
-# 5. CLI 模式运行分析，生成报告
-./run.sh <code>
+# 1. data_sources/ 获取或注入标准化行业数据与财务数据
+# 2. IndustryAgent 将数据传入 runtime.py
+# 3. runtime.py 输出 Signal 字典与 data_collection_tasks
+# 4. Orchestrator 只消费标准 Signal，不依赖本地 JSON 或 HTML
 ```
 
-**一键执行（整合版）**：
+**CLI / 手工调试流程**：
 ```bash
-# 首次运行：数据为空 → 自动生成采集任务清单 → 提示AI去搜索
+# 首次运行：数据为空 → 生成采集任务清单 → 提示补充缺失字段
 ./run.sh <code>
-# 终端会输出：
-#   ⚠️ 数据缺失警告: X项核心数据未填充
-#   已自动生成AI数据采集任务清单: data/<code>_collection_tasks.json
-#   对方AI执行流程: 1.搜索 → 2.校验 → 3.回填 → 4.重新运行
 
-# 数据填满后再次运行：
+# 手工或调试工具补齐 data/<code>_real_data.json 后再次运行：
 ./run.sh <code>
-# → 正常生成完整报告
+# → 生成 CLI HTML 报告
 ```
 
 **任务清单包含什么**（以光模块为例）：
@@ -248,18 +231,18 @@ python3 scripts/validate_data.py <code>
 | `fallback_strategy` | 搜不到时的降级策略，如 "用往期财报毛利率推算趋势" |
 | `field_path` | 回填路径，如 `industry_signals.industry_price_yoy` |
 
-**数据质量校验（AI自检）**：
+**数据质量校验**：
 
-对方AI回填数据时必须执行：
+补充数据时必须执行：
 1. **来源校验**：数字必须有 `source`（财报/研报/新闻/公告）和 `date`（YYYY-MM-DD）
 2. **时效校验**：超过90天的数据标注"数据老化"
 3. **优先级校验**：优先使用 `source_priority` 排第一的来源
 4. **缺失降级**：搜不到时用 `fallback_strategy`，绝不编造
 5. **趋势标注**：按 `validation_rule` 标注数值趋势（↑/↓/→）
 
-### 3.4 手动数据准备流程（备选）
+### 3.4 CLI 手动数据准备流程（备选）
 
-如果你更倾向于手工搜索和填入数据：
+以下流程只用于 `./run.sh` / `core/pipeline.py` 的独立调试，不是项目级 Agent 主流程：
 
 ```bash
 # 1. 使用你的AI搜索工具搜索财报和行业数据
@@ -319,10 +302,9 @@ python scripts/validate_data.py <code>
 
 **现象**：报告中出现"数据缺失"
 **解决**：
-1. 运行 `python scripts/validate_data.py <code>` 检查缺失字段
-2. 用搜索工具（web_search/kimi_search/serpapi等）搜索对应数据
-3. 填入 `data/<code>_real_data.json`
-4. 重新运行 `./run.sh <code>`
+1. 项目级 Agent：检查 `Signal.meta.needs_data`、`degradation_reasons` 和 `data_collection_tasks`
+2. 通过 `data_sources/` 或上游数据服务补齐行业级、同业篮子和公司财务字段
+3. CLI 调试：可运行 `python scripts/validate_data.py <code>`，补齐 `data/<code>_real_data.json` 后重新运行 `./run.sh <code>`
 
 ### 6.2 行业识别失败
 
@@ -332,7 +314,7 @@ python scripts/validate_data.py <code>
 ### 6.3 产业链结构不显示
 
 **现象**：产业链结构区块空白
-**解决**：仅光通信行业有完整产业链卡片，其他行业需手动编写 `references/<industry>-chain.md`。
+**解决**：优先使用 `references/preset-chains/` 中的 preset YAML；未覆盖行业应新增对应 preset 结构，不要在主流程中返回空白结构冒充完整分析。
 
 ---
 
@@ -359,10 +341,7 @@ industrial_sentinel/
 │   ├── auto_detect_preset.py    # 本地 preset 路由
 │   └── data_collection_guide.py # AI数据采集任务生成器
 ├── scripts/
-│   ├── auto_fetch.py            # 调试包装，委托 data_sources
-│   ├── fill_data.py             # 手工回填辅助
-│   ├── generate_mapping.py      # 映射生成辅助
-│   ├── generate_data_template.py # 数据模板生成器
+│   ├── generate_data_template.py # CLI 数据模板生成器
 │   └── validate_data.py         # 数据验证器
 ├── data/
 │   └── mappings/                # 股票→行业映射表
