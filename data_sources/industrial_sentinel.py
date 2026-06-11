@@ -8,9 +8,9 @@ Industrial Sentinel 专用复合数据源
 设计原则（与项目 data_sources/ 层对齐）：
 - 真实 fetching / parsing / provider 逻辑放在本层
 - 网络异常时自动降级到本地缓存
-- 缓存文件放在 skills/industry/industrial_sentinel/data/ 下
+- 缓存文件放在 data_sources/data/industrial_sentinel/ 下
 - 返回统一格式的 dict，直接供 runtime._build_real_data 消费
-- Agent 只调用接口，不关心数据从哪来
+- Agent 负责把数据缺失场景降级为框架级 preset fallback
 """
 
 from typing import Any, Dict, Optional
@@ -84,11 +84,20 @@ class IndustrialSentinelDataSource:
         if financial_reason:
             degradation_reasons.append(financial_reason)
 
+        industry_status = self._classify_industry_status(
+            industry_result, industry_from_cache
+        )
+        financial_status = self._classify_financial_status(
+            financial_data, financial_from_cache
+        )
+
         return {
             "industry_result": industry_result,
             "financial_data": financial_data,
             "industry_from_cache": industry_from_cache,
             "financial_from_cache": financial_from_cache,
+            "industry_status": industry_status,
+            "financial_status": financial_status,
             "degradation_reasons": degradation_reasons,
         }
 
@@ -114,26 +123,17 @@ class IndustrialSentinelDataSource:
 
         # 2. 降级到缓存
         cached = self._load_cache(f"{stock_code}_industry")
-        if cached:
+        if cached and self._has_industry_payload(cached):
             logger.info(f"[{self.name}] 行业数据降级到缓存")
             return cached, True, ""
+        if cached:
+            logger.warning(f"[{self.name}] 行业缓存为空或格式无效，跳过缓存")
 
-        # 3. 降级到本地 preset 路由。这里只提供分析框架，不提供真实景气结论。
-        preset_fallback = self._build_preset_fallback(stock_code)
-        if preset_fallback:
-            reason = (
-                f"【行业情绪数据缺失】无法获取 {stock_code} 的实时行业板块景气数据，"
-                f"已降级到本地 preset 路由：{preset_fallback.get('preset')}。"
-                "该结果只用于选择分析框架，不代表真实行业景气度。"
-            )
-            logger.info(f"[{self.name}] 行业数据降级到本地 preset 路由")
-            return preset_fallback, False, reason
-
-        # 4. 返回空 + 降级原因
+        # 3. 返回空 + 降级原因；框架级 preset fallback 由 IndustryAgent 负责。
         reason = (
             f"【行业情绪数据缺失】无法获取 {stock_code} 的行业板块景气数据。"
             f"建议补充方式：1) 使用 AI 搜索 '{stock_code} 所属行业 板块景气度'；"
-            f"2) 或手动填入 skills/industry/industrial_sentinel/data/{stock_code}_real_data.json 的 industry_data 字段"
+            "2) 通过 data_sources 注入行业景气、生命周期、拐点和特殊信号字段"
         )
         logger.warning(f"[{self.name}] 行业数据不可用（实时+缓存均失败）")
         return None, False, reason
@@ -173,15 +173,17 @@ class IndustrialSentinelDataSource:
 
         # 2. 降级到缓存
         cached = self._load_cache(f"{stock_code}_financial")
-        if cached:
+        if cached and self._has_financial_payload(cached):
             logger.info(f"[{self.name}] 财务数据降级到缓存")
             return cached, True, ""
+        if cached:
+            logger.warning(f"[{self.name}] 财务缓存为空或格式无效，跳过缓存")
 
         # 3. 返回空 + 降级原因
         reason = (
             f"【财务数据缺失】无法获取 {stock_code} 的财务报表数据。"
             f"建议补充方式：1) 使用 AI 搜索 '{stock_code} 最新财报 营收增速 毛利率'；"
-            f"2) 或手动填入 skills/industry/industrial_sentinel/data/{stock_code}_real_data.json 的 real_signals 字段"
+            "2) 通过 data_sources 注入营收、利润率、现金流和资产负债表字段"
         )
         logger.warning(f"[{self.name}] 财务数据不可用（实时+缓存均失败）")
         return None, False, reason
@@ -214,70 +216,55 @@ class IndustrialSentinelDataSource:
                     return True
         return False
 
-    def _build_preset_fallback(self, stock_code: str) -> Optional[Dict[str, Any]]:
-        """Build a framework-only fallback from local preset routing.
+    def _has_industry_payload(self, data: Dict[str, Any]) -> bool:
+        """判断行业 payload 是否包含可用于分析或路由的信息。"""
+        if not isinstance(data, dict):
+            return False
+        if data.get("status") == "preset_only" and data.get("preset"):
+            return True
+        if data.get("industry") or data.get("industry_name"):
+            return True
+        if data.get("signals") or data.get("special_signals"):
+            return True
+        if any(data.get(key) is not None for key in ("score", "stage", "direction")):
+            return True
+        return False
 
-        This keeps provider logic in data_sources while making it explicit that
-        the returned payload is not real industry sentiment data.
-        """
-        try:
-            from skills.industry.industrial_sentinel.core.auto_detect_preset import (
-                auto_detect_preset,
-            )
+    def _classify_industry_status(
+        self,
+        industry_result: Optional[Dict[str, Any]],
+        from_cache: bool,
+    ) -> str:
+        """返回行业数据状态，供 Agent meta 追踪使用。"""
+        if not industry_result:
+            return "missing"
+        if industry_result.get("status") == "preset_only":
+            return "preset_only"
+        if from_cache:
+            return "cache"
+        return "live"
 
-            preset = auto_detect_preset(
-                stock_code,
-                self._cache_dir,
-                allow_provider_lookup=False,
-            )
-        except Exception as exc:
-            logger.debug(f"[{self.name}] 本地 preset 路由失败: {exc}")
-            return None
-
-        if not preset or preset == "generic":
-            return None
-
-        industry_name = self._load_preset_industry_name(preset) or preset
-        return {
-            "status": "preset_only",
-            "industry_name": industry_name,
-            "preset": preset,
-            "signals": {},
-            "confidence": 0.0,
-            "source": "local_preset_routing",
-        }
-
-    def _load_preset_industry_name(self, preset: str) -> Optional[str]:
-        """Read industry_name from the local preset YAML when available."""
-        try:
-            from skills.industry.industrial_sentinel.core.pipeline import load_preset_yaml
-
-            yaml_data = load_preset_yaml(preset)
-            if isinstance(yaml_data, dict):
-                return yaml_data.get("industry_name") or yaml_data.get("chain_name")
-        except Exception as exc:
-            logger.debug(f"[{self.name}] preset YAML 读取失败: {exc}")
-        return None
+    def _classify_financial_status(
+        self,
+        financial_data: Optional[Dict[str, Any]],
+        from_cache: bool,
+    ) -> str:
+        """返回财务数据状态，供 Agent meta 追踪使用。"""
+        if not financial_data:
+            return "missing"
+        if from_cache:
+            return "cache"
+        return "live"
 
     # ── 缓存管理 ──
 
     def _find_cache_dir(self) -> Path:
         """查找缓存目录。
 
-        优先使用 skill 内部的 data 目录，确保与 industrial_sentinel 框架共享缓存。
+        缓存属于项目数据层，不写入 skill 目录，避免 analysis Skill
+        持有 provider 运行态数据。
         """
-        # 方案1: 从本文件向上找到项目根目录，再定位到 skill data 目录
-        try:
-            repo_root = Path(__file__).resolve().parents[1]
-            skill_data_dir = repo_root / "skills" / "industry" / "industrial_sentinel" / "data"
-            if skill_data_dir.exists():
-                return skill_data_dir
-        except Exception:
-            pass
-
-        # 方案2: fallback 到本文件同级 cache 目录
-        fallback = Path(__file__).resolve().parent / "cache" / "industrial_sentinel"
-        return fallback
+        return Path(__file__).resolve().parent / "data" / "industrial_sentinel"
 
     def _save_cache(self, key: str, data: Dict[str, Any]) -> None:
         """保存数据到缓存。"""

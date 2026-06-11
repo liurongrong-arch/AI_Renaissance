@@ -376,16 +376,45 @@ class TestIndustryAgent:
                    return_value=mock_runtime_success) as mock_run, \
              patch("agents.industry.agent.IndustrialSentinelDataSource") as constructor:
             agent = IndustryAgent(config={"industrial_sentinel_data_source": injected_source})
-            signal = agent.analyze("002916.SZ")
+            signal = agent.analyze("999999.SZ")
 
         constructor.assert_not_called()
-        injected_source.get_data.assert_called_once_with("002916.SZ")
+        injected_source.get_data.assert_called_once_with("999999.SZ")
         mock_run.assert_called_once()
         _, kwargs = mock_run.call_args
         assert kwargs["industry_result"] is None
         assert kwargs["financial_data"] is None
         assert kwargs["config"]["_degradation_reasons"] == ["offline test"]
         assert signal.signal_type == "industry"
+
+    def test_stock_input_uses_agent_level_preset_fallback_when_industry_data_missing(self, mock_runtime_success):
+        """行业数据缺失时，Agent 负责把本地 preset 路由降级传给 runtime。"""
+        from agents.industry.agent import IndustryAgent
+
+        source_data = {
+            "industry_result": None,
+            "financial_data": None,
+            "industry_from_cache": False,
+            "financial_from_cache": False,
+            "industry_status": "missing",
+            "financial_status": "missing",
+            "degradation_reasons": ["offline test"],
+        }
+        injected_source = MagicMock()
+        injected_source.get_data.return_value = source_data
+
+        with patch("agents.industry.agent.run_industrial_sentinel",
+                   return_value=mock_runtime_success) as mock_run:
+            agent = IndustryAgent(config={"industrial_sentinel_data_source": injected_source})
+            signal = agent.analyze("000700.SZ")
+
+        injected_source.get_data.assert_called_once_with("000700.SZ")
+        _, kwargs = mock_run.call_args
+        assert kwargs["industry_result"]["status"] == "preset_only"
+        assert kwargs["industry_result"]["preset"] == "robotics"
+        assert kwargs["config"]["_degradation_reasons"][0] == "offline test"
+        assert any("本地 preset 路由" in reason for reason in kwargs["config"]["_degradation_reasons"])
+        assert signal.meta["data_source"]["industry_status"] == "preset_only"
 
     def test_stock_name_input_routes_to_stock_code(self, mock_runtime_success):
         """股票名称输入应先归一化为股票代码，再调用项目数据源"""
@@ -431,9 +460,12 @@ class TestIndustryAgent:
         assert kwargs["industry_result"]["preset"] == "robotics"
         assert kwargs["financial_data"] is None
         assert kwargs["config"]["_input_context"]["input_type"] == "industry"
-        assert "industry_or_preset_input_without_stock_financial_data" in (
-            kwargs["config"]["_degradation_reasons"]
+        assert any(
+            "行业输入无个股财务数据" in reason
+            for reason in kwargs["config"]["_degradation_reasons"]
         )
+        assert signal.meta["data_source"]["industry_status"] == "preset_only"
+        assert signal.meta["data_source"]["financial_status"] == "not_applicable"
         assert signal.meta["input_context"]["preset"] == "robotics"
 
     def test_direct_preset_input_uses_framework_only(self, mock_runtime_neutral):
@@ -569,7 +601,7 @@ def test_runtime_caps_preset_only_confidence():
         financial_data=None,
         config={
             "_degradation_reasons": [
-                "industry_or_preset_input_without_stock_financial_data"
+                "【行业输入无个股财务数据】输入 '机器人' 已匹配 robotics 分析框架。"
             ]
         },
     )
@@ -579,6 +611,65 @@ def test_runtime_caps_preset_only_confidence():
     assert result["weight"] <= 0.2
     assert result["meta"]["needs_data"] is True
     assert result["meta"]["data_quality"] == "missing"
+    assert result["meta"]["degradation_level"] == "framework_only"
+    assert result["meta"]["confidence_cap_reason"] == "framework_only_preset"
+
+
+def test_runtime_caps_fully_missing_data_confidence():
+    """行业和财务数据都缺失时，runtime 应低置信度降级并明确原因"""
+    from skills.industry.industrial_sentinel.runtime import run_industrial_sentinel
+
+    result = run_industrial_sentinel(
+        "未知行业输入",
+        industry_result=None,
+        financial_data=None,
+        config={"_degradation_reasons": ["offline test"]},
+    )
+
+    assert result["direction"] == "neutral"
+    assert result["confidence"] <= 0.25
+    assert result["weight"] <= 0.2
+    assert result["meta"]["needs_data"] is True
+    assert result["meta"]["data_quality"] == "missing"
+    assert result["meta"]["degradation_level"] == "missing"
+    assert result["meta"]["confidence_cap_reason"] == "industry_and_financial_data_missing"
+
+
+def test_runtime_caps_sparse_industry_signal_confidence():
+    """行业信号不足时，不能只因财务字段完整就输出高置信结论。"""
+    from skills.industry.industrial_sentinel.runtime import run_industrial_sentinel
+
+    result = run_industrial_sentinel(
+        "688981.SH",
+        industry_result={
+            "status": "success",
+            "industry_name": "AI芯片层",
+            "preset": "ai-chip",
+            "signals": {"industry_market_growth": 20},
+            "confidence": 0.8,
+        },
+        financial_data={
+            "revenue_growth": 0.22,
+            "rd_ratio": 0.06,
+            "research_expense_ratio": 0.06,
+            "fixed_asset": 25_000_000_000,
+            "total_asset": 100_000_000_000,
+            "net_profit_parent": 8_000_000_000,
+            "gross_margin": 0.28,
+            "roe": 0.12,
+            "debt_ratio": 0.45,
+        },
+        config={},
+    )
+
+    assert result["confidence"] <= 0.45
+    assert result["weight"] <= 0.3
+    assert result["meta"]["needs_data"] is True
+    assert result["meta"]["data_quality"] == "incomplete"
+    assert result["meta"]["degradation_level"] == "partial"
+    assert result["meta"]["confidence_cap_reason"] == "insufficient_industry_signals"
+    assert result["meta"]["industry_signal_count"] == 1
+    assert result["meta"]["system_a_matched_signal_count"] >= 0
 
 
 def test_system_a_prefers_industry_signals_over_company_real_signals():
@@ -623,6 +714,18 @@ def test_industrial_sentinel_rejects_empty_financial_payload():
     )
 
 
+def test_industrial_sentinel_default_cache_stays_in_data_sources():
+    """复合数据源默认缓存目录应属于 data_sources，而不是写入 Skill 目录。"""
+    from data_sources.industrial_sentinel import IndustrialSentinelDataSource
+
+    data_source = IndustrialSentinelDataSource.__new__(IndustrialSentinelDataSource)
+    cache_dir = data_source._find_cache_dir()
+    normalized = str(cache_dir).replace("\\", "/")
+
+    assert normalized.endswith("data_sources/data/industrial_sentinel")
+    assert "skills/industry/industrial_sentinel/data" not in normalized
+
+
 def test_industrial_sentinel_accepts_injected_sources(tmp_path):
     """复合数据源应允许注入底层行业/财务源，统一由 data_sources 层编排"""
     from data_sources.industrial_sentinel import IndustrialSentinelDataSource
@@ -656,8 +759,8 @@ def test_industrial_sentinel_accepts_injected_sources(tmp_path):
     assert data["financial_from_cache"] is False
 
 
-def test_industrial_sentinel_uses_local_preset_fallback_when_offline(tmp_path):
-    """实时和缓存都失败时，data_sources 层应返回框架级 preset fallback"""
+def test_industrial_sentinel_reports_missing_when_offline(tmp_path):
+    """实时和缓存都失败时，data_sources 层只报告缺失，不反向依赖 Skill fallback。"""
     from data_sources.industrial_sentinel import IndustrialSentinelDataSource
 
     industry_source = MagicMock()
@@ -680,12 +783,40 @@ def test_industrial_sentinel_uses_local_preset_fallback_when_offline(tmp_path):
 
     data = data_source.get_data("000700.SZ")
 
-    assert data["industry_result"]["status"] == "preset_only"
-    assert data["industry_result"]["preset"] == "robotics"
-    assert data["industry_result"]["source"] == "local_preset_routing"
+    assert data["industry_result"] is None
     assert data["industry_from_cache"] is False
+    assert data["industry_status"] == "missing"
+    assert data["financial_status"] == "missing"
     assert data["financial_data"] is None
-    assert any("本地 preset 路由" in reason for reason in data["degradation_reasons"])
+    assert any("行业情绪数据缺失" in reason for reason in data["degradation_reasons"])
+    assert any("财务数据缺失" in reason for reason in data["degradation_reasons"])
+
+
+def test_industrial_sentinel_rejects_empty_cached_financial_payload(tmp_path):
+    """空财务缓存不应绕过数据缺失降级。"""
+    from data_sources.industrial_sentinel import IndustrialSentinelDataSource
+
+    industry_source = MagicMock()
+    industry_source.get_industry_sentiment.return_value = None
+    financial_source = MagicMock()
+    financial_source.get_financial_data.return_value = None
+    cache_file = tmp_path / "002916.SZ_financial_cache.json"
+    cache_file.write_text(
+        '{"balance": {}, "income": {}, "cashflow": {}}',
+        encoding="utf-8",
+    )
+
+    data_source = IndustrialSentinelDataSource(
+        industry_data_source=industry_source,
+        financial_data_source=financial_source,
+        cache_dir=tmp_path,
+    )
+
+    data = data_source.get_data("002916.SZ")
+
+    assert data["financial_data"] is None
+    assert data["financial_from_cache"] is False
+    assert data["financial_status"] == "missing"
     assert any("财务数据缺失" in reason for reason in data["degradation_reasons"])
 
 

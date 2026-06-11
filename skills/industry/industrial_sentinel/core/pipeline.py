@@ -151,19 +151,19 @@ def _first_present(source: Dict[str, Any], keys: List[str]) -> Any:
 
 
 def _build_system_a_signals(real_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """构造 System A 输入：行业级信号优先，同业篮子其次，旧 real_signals 仅兼容兜底。"""
+    """构造 System A 输入：行业级信号优先，同业篮子其次，扁平字段仅兼容兜底。"""
     if not real_data:
         return {}
 
     industry = real_data.get("industry_signals") or {}
     peer = real_data.get("peer_basket_signals") or {}
-    legacy = real_data.get("real_signals") or {}
+    flat_signals = real_data.get("real_signals") or {}
     if not isinstance(industry, dict):
         industry = {"qualitative_signals": industry}
     if not isinstance(peer, dict):
         peer = {}
-    if not isinstance(legacy, dict):
-        legacy = {}
+    if not isinstance(flat_signals, dict):
+        flat_signals = {}
 
     result: Dict[str, Any] = {}
     scopes: Dict[str, str] = {}
@@ -204,12 +204,12 @@ def _build_system_a_signals(real_data: Optional[Dict[str, Any]]) -> Dict[str, An
 
     core_fields = ["revenue_growth", "order_backlog", "capacity_utilization", "price_yoy", "inventory_days", "capex_plan"]
     if not any(result.get(field) is not None for field in core_fields):
-        for key, value in legacy.items():
+        for key, value in flat_signals.items():
             if value not in (None, "", "数据缺失", "待补充"):
                 result[key] = value
-                scopes[key] = "legacy_company_fallback"
-        if legacy:
-            result["_system_a_warning"] = "System A 使用旧 real_signals 兼容路径；建议补充 industry_signals 或 peer_basket_signals。"
+                scopes[key] = "flat_company_fallback"
+        if flat_signals:
+            result["_system_a_warning"] = "System A 使用扁平 real_signals 兼容路径；建议补充 industry_signals 或 peer_basket_signals。"
 
     result["_signal_scope"] = scopes
     return result

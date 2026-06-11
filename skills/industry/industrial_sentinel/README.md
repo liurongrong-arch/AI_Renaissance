@@ -116,8 +116,8 @@ Python 3.9+。独立方法论框架尽量只依赖标准库；接入项目主流
 
 | 想看什么 | 读哪个 |
 |---------|--------|
-| 完整使用文档 | `SKILL.md` |
-| AI 自动执行指南 | `references/ai-agent-guide.md` |
+| 项目接入与 CLI 使用文档 | `SKILL.md` |
+| 独立调试数据补充指南 | `references/ai-agent-guide.md` |
 | 方法论详细说明 | `references/framework-structure.md` |
 | 数据字段规范 | `references/data-requirements.md` |
 | 判断映射规则 | `references/methodology-mapping.md` |

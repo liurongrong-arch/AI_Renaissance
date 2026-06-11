@@ -288,48 +288,6 @@ def load_user_map(data_dir: Path) -> Dict[str, str]:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 第二层：通过 akshare 获取申万行业（如果环境有）
-# ═══════════════════════════════════════════════════════════════
-
-def query_akshare(stock_code: str) -> Optional[str]:
-    """尝试用 data_sources 层的 AkShare 查询行业分类。"""
-    try:
-        from data_sources.industry_preset_detection import query_akshare_industry
-        return query_akshare_industry(stock_code)
-    except Exception as e:
-        logger.debug("akshare 查询失败: %s", e)
-    return None
-
-
-# ═══════════════════════════════════════════════════════════════
-# 第三层：通过东方财富网页API获取行业
-# ═══════════════════════════════════════════════════════════════
-
-def query_eastmoney(stock_code: str) -> Optional[str]:
-    """尝试通过 data_sources 层的东方财富查询行业。"""
-    try:
-        from data_sources.industry_preset_detection import query_eastmoney_industry
-        return query_eastmoney_industry(stock_code)
-    except Exception as e:
-        logger.debug("东方财富API查询失败: %s", e)
-    return None
-
-
-# ═══════════════════════════════════════════════════════════════
-# 第四层：通过腾讯API获取名称，然后搜索行业
-# ═══════════════════════════════════════════════════════════════
-
-def query_tencent_name(stock_code: str) -> Optional[str]:
-    """通过 data_sources 层的腾讯行情查询股票名称。"""
-    try:
-        from data_sources.industry_preset_detection import query_tencent_stock_name
-        return query_tencent_stock_name(stock_code)
-    except Exception as e:
-        logger.debug("腾讯API查询失败: %s", e)
-    return None
-
-
-# ═══════════════════════════════════════════════════════════════
 # 行业名称 → preset 匹配
 # ═══════════════════════════════════════════════════════════════
 
@@ -361,7 +319,7 @@ def auto_detect_preset(
     自动检测股票所属 preset。支持代码和名称。
 
     查询顺序：preset直传 → 名称/行业关键词 → 名称转代码 → 本地 preset 路由 → 用户映射。
-    allow_provider_lookup=True 时，才委托 data_sources/ 查询外部 provider。
+    allow_provider_lookup 保留为兼容参数；外部 provider 识别统一由 data_sources/ 负责。
     """
     data_dir = Path(data_dir) if not isinstance(data_dir, Path) else data_dir
     direct_preset = stock_code.strip().lower()
@@ -405,35 +363,7 @@ def auto_detect_preset(
         logger.info("[自动检测] %s → %s (用户映射)", stock_code, preset)
         return preset
 
-    if not allow_provider_lookup:
-        logger.warning("[自动检测] %s 未命中本地映射，跳过 provider 查询", stock_code)
-        return None
-
-    # 轮2：akshare
-    industry = query_akshare(stock_code)
-    if industry:
-        preset = match_preset_by_industry(industry)
-        if preset:
-            logger.info("[自动检测] %s → %s (akshare: %s)", stock_code, preset, industry)
-            return preset
-
-    # 轮3：东方财富API
-    industry = query_eastmoney(stock_code)
-    if industry:
-        preset = match_preset_by_industry(industry)
-        if preset:
-            logger.info("[自动检测] %s → %s (东方财富: %s)", stock_code, preset, industry)
-            return preset
-
-    # 轮4：腾讯API获取名称 + 名称关键词匹配
-    name = query_tencent_name(stock_code)
-    if name:
-        preset = match_preset_by_industry(name)
-        if preset:
-            logger.info("[自动检测] %s → %s (名称匹配: %s)", stock_code, preset, name)
-            return preset
-
-    logger.warning("[自动检测] %s 无法自动识别行业，请手动指定 --preset", stock_code)
+    logger.warning("[自动检测] %s 未命中本地映射；外部 provider 识别请通过 data_sources 注入", stock_code)
     return None
 
 
@@ -484,50 +414,8 @@ def auto_detect_preset_with_log(
         return preset, logs
     logs.append("  ❌ 未命中")
 
-    if not allow_provider_lookup:
-        logs.append("跳过 provider 查询：Skill 默认不直接联网，请通过 data_sources 注入数据或补充映射。")
-        return None, logs
-    
-    # 轮2：akshare
-    logs.append("轮2: 查 akshare 申万行业...")
-    industry = query_akshare(stock_code)
-    if industry:
-        logs.append(f"  ✅ 查到行业: {industry}")
-        preset = match_preset_by_industry(industry)
-        if preset:
-            logs.append(f"  ✅ 匹配 preset: {preset}")
-            return preset, logs
-        logs.append(f"  ⚠️ 行业'{industry}'未匹配到已知preset")
-    else:
-        logs.append("  ❌ akshare 不可用或查询失败")
-    
-    # 轮3：东方财富
-    logs.append("轮3: 查东方财富API...")
-    industry = query_eastmoney(stock_code)
-    if industry:
-        logs.append(f"  ✅ 查到行业: {industry}")
-        preset = match_preset_by_industry(industry)
-        if preset:
-            logs.append(f"  ✅ 匹配 preset: {preset}")
-            return preset, logs
-        logs.append(f"  ⚠️ 行业'{industry}'未匹配到已知preset")
-    else:
-        logs.append("  ❌ 东方财富API查询失败")
-    
-    # 轮4：腾讯API
-    logs.append("轮4: 查腾讯API获取名称...")
-    name = query_tencent_name(stock_code)
-    if name:
-        logs.append(f"  ✅ 查到名称: {name}")
-        preset = match_preset_by_industry(name)
-        if preset:
-            logs.append(f"  ✅ 名称关键词匹配: {preset}")
-            return preset, logs
-        logs.append(f"  ⚠️ 名称'{name}'未匹配到已知preset")
-    else:
-        logs.append("  ❌ 腾讯API查询失败")
-    
-    logs.append("\n❌ 所有查询轮次均失败，请手动指定 --preset <preset名称>")
+    logs.append("未命中本地映射；外部 provider 识别请通过 data_sources 注入，或补充本地映射。")
+    logs.append("\n请手动指定 --preset <preset名称>，或在项目数据层补充行业识别结果。")
     logs.append("   可用preset (黄仁勋AI五层蛋糕): ")
     logs.append("     L1能源: ai-energy | L2芯片: ai-chip, semiconductor-equipment, storage")
     logs.append("     L3基础设施: optical-module, ai-infrastructure, pcb | L4模型: ai-model")

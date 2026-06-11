@@ -287,15 +287,15 @@
 
 你的Agent只需要做两件事：
 
-**第一步：搜索数据**
+**第一步：准备标准化数据**
 ```python
-# 你的Agent或 data_sources 搜索行业、同业、公司三类数据
+# 项目级接入由 data_sources 准备行业、同业、公司三类数据
 industry_growth = search("光模块 行业需求增速 2026")
 peer_margin = search("光模块 上市公司 毛利率 中位数")
 order_backlog = search("光模块 行业排产 订单 backlog")
 ```
 
-**第二步：填入JSON**
+**第二步：传入 runtime**
 ```python
 data = {
     "industry_signals": {
@@ -308,7 +308,8 @@ data = {
         "gross_margin_median_source": "同业财报汇总"
     }
 }
-# 保存到 data/688XXX.SH_real_data.json
+# 项目 Agent: 通过 run_industrial_sentinel(..., industry_result, financial_data, config) 注入
+# CLI 调试: 可保存到 data/688XXX.SH_real_data.json 后运行 ./run.sh
 ```
 
 **第三步：框架自动推理**

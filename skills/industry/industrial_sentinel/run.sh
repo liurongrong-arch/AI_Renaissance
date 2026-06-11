@@ -3,7 +3,6 @@
 # 用法: ./run.sh <股票代码/名称> [选项]
 # 示例: ./run.sh 002916.SZ
 #       ./run.sh 002916.SZ --preset pcb
-#       ./run.sh AXTI.US --auto
 
 set -e
 
@@ -26,7 +25,7 @@ Industrial Sentinel Pipeline
 
 选项:
     --preset <name>         强制指定产业链preset（不自动检测）
-    --auto                  强制自动检测preset（覆盖JSON中的配置）
+    --auto                  强制重新执行本地 preset 路由（覆盖JSON中的配置）
     --help, -h              显示本帮助信息
 
 支持的preset (黄仁勋AI五层蛋糕):
@@ -36,12 +35,12 @@ Industrial Sentinel Pipeline
     L4 模型:       ai-model
     L5 应用:       robotics
 
-自动检测逻辑（多轮查询）:
-    轮1: 查本地 preset 路由表（覆盖常见标的，只用于选择分析框架）
-    轮2: 查 akshare 申万行业（如果环境有）
-    轮3: 查东方财富API
-    轮4: 查腾讯API获取名称+关键词匹配
-    兜底: 提示用户手动指定 --preset
+	preset 路由逻辑:
+	    轮1: 识别 preset / 行业关键词 / 常见名称
+	    轮2: 查本地 preset 路由表（只用于选择分析框架）
+	    轮3: 查用户补充映射
+	    兜底: 提示用户手动指定 --preset
+	    注意: 外部 provider 识别属于项目 data_sources/，不在 Skill 内直接联网
 
 步骤:
     Step 1: 加载真实财报数据 (data/<code>_real_data.json)
