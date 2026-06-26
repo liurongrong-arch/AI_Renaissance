@@ -89,7 +89,7 @@ def search_knowledge_bases(query: str = "", cursor: str = "", limit: int = 20):
     docs = result.get("docs", [])
     if not docs:
         docs = result.get("info_list", [])
-    return docs, result.get("cursor", "")
+    return docs, result.get("cursor", "")   
 
 def get_knowledge_list(kb_id: str, folder_id: str = "", cursor: str = "", limit: int = 20) -> dict:
     """
@@ -125,7 +125,38 @@ def list_all_knowledge_bases(max_items: int = 50):
         if not cursor:
             break
     
-    return all_kbs        
+    return all_kbs     
+
+def import_doc(content_format: int = 1, content: str = "", folder_id: str = "") -> dict:
+    """
+    导入文档到知识库
+
+    参数:
+      content_format: 内容格式，1=纯文本，2=HTML，3=Markdown
+      content:        文档内容
+      folder_id:      文件夹 ID，传空字符串表示根目录
+    """
+    body = {
+        "content_format": content_format,
+        "content": content,
+    }
+    if folder_id:
+        body["folder_id"] = folder_id
+    return call_api("/openapi/note/v1/import_doc", body)
+    
+def get_doc_content(note_id: str, target_content_format: int = 1) -> dict:
+    """
+    获取文档内容
+
+    参数:
+      note_id: 文档 ID
+    target_content_format: 目标内容格式，1=纯文本，2=HTML，3=Markdown
+    """
+    body = {
+        "note_id": note_id,
+        "target_content_format": target_content_format
+    }
+    return call_api("/openapi/note/v1/get_doc_content", body)
 
 def print_note(item: dict, index: int = 1):
     """格式化输出一条笔记"""
@@ -250,40 +281,60 @@ def main():
     #     except Exception as e:
     #         print(f"❌ 正文搜索失败: {e}")
 
-    print("\n>>> 列出知识库")
-    print("=" * 62)
-    try:
-        kbs = list_all_knowledge_bases()
+    # print("\n>>> 列出知识库")
+    # print("=" * 62)
+    # try:
+    #     kbs = list_all_knowledge_bases()
         
-        if kbs:
-            print(f"\n共找到 {len(kbs)} 个知识库:\n")
-            for i, kb in enumerate(kbs, 1):
-                kb_name = kb.get('kb_name', kb.get('title', '未命名'))
-                kb_id = kb.get('id', kb.get('kb_id', '?'))
-                kb_desc = kb.get('description', kb.get('desc', ''))
-                kb_type = kb.get('base_type', kb.get('type', '未知'))
+    #     if kbs:
+    #         print(f"\n共找到 {len(kbs)} 个知识库:\n")
+    #         for i, kb in enumerate(kbs, 1):
+    #             kb_name = kb.get('kb_name', kb.get('title', '未命名'))
+    #             kb_id = kb.get('id', kb.get('kb_id', '?'))
+    #             kb_desc = kb.get('description', kb.get('desc', ''))
+    #             kb_type = kb.get('base_type', kb.get('type', '未知'))
                 
-                print(f"  [{i}] 📚 {kb_name}")
-                print(f"      ├─ ID: {kb_id}")
-                print(f"      ├─ 类型: {kb_type}")
-                if kb_desc:
-                    print(f"      └─ 描述: {kb_desc[:100]}")
-        else:
-            print("  (无知识库或获取失败)")
-    except Exception as e:
-        print(f"  ⚠️ 获取知识库列表失败: {e}")
+    #             print(f"  [{i}] 📚 {kb_name}")
+    #             print(f"      ├─ ID: {kb_id}")
+    #             print(f"      ├─ 类型: {kb_type}")
+    #             if kb_desc:
+    #                 print(f"      └─ 描述: {kb_desc[:100]}")
+    #     else:
+    #         print("  (无知识库或获取失败)")
+    # except Exception as e:
+    #     print(f"  ⚠️ 获取知识库列表失败: {e}")
+
+    # try:    
+    #     docId = import_doc(
+    #         content_format=1,
+    #         content="苍天已死，黄天当立，岁在甲子，天下大吉。",
+    #         folder_id=""
+    #     )
+    #     print(f"\n>>> 导入文档成功: ID={docId.get('note_id', docId.get('noteid', '?'))}, 标题=黄巾起义口号")
+    # except Exception as e:
+    #     print(f"\n>>> 导入文档失败: {e}")  
 
     try:
-        articles = get_knowledge_list("LtqPu1fRJhboTvAu0MGt0jTHrZyDxdFq7GNtXvfuJlI=", limit=5)
-        print(f"\n>>> 浏览知识库: {"招财进喵的知识库"} (ID: {kbs[0].get('id', kbs[0].get('kb_id', '?'))})")
-
-        docs = articles.get("knowledge_list", [])
-        print(f"  共 {len(docs)} 篇文章")
-
-        for item in docs:
-            print(f"  📄 {item['title']}")
+        doc_content = get_doc_content(
+            note_id="7476203543869916",
+            target_content_format=1
+        )
+        print(f"\n>>> 获取文档内容成功: {doc_content.get('content', '')}")     
     except Exception as e:
-        print(f"  ⚠️ 获取知识库下文章列表失败: {e}")
+        print(f"\n>>> 获取文档内容失败: {e}")  
+
+
+    # try:
+    #     articles = get_knowledge_list("LtqPu1fRJhboTvAu0MGt0jTHrZyDxdFq7GNtXvfuJlI=", limit=5)
+    #     print(f"\n>>> 浏览知识库: {"招财进喵的知识库"} (ID: {kbs[0].get('id', kbs[0].get('kb_id', '?'))})")
+
+    #     docs = articles.get("knowledge_list", [])
+    #     print(f"  共 {len(docs)} 篇文章")
+
+    #     for item in docs:
+    #         print(f"  📄 {item['title']}")
+    # except Exception as e:
+    #     print(f"  ⚠️ 获取知识库下文章列表失败: {e}")
     print(f"\n{'=' * 62}")
     print("  ✅ 搜索完成")
 
